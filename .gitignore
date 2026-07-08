@@ -1,0 +1,9 @@
+# Artefak hasil generate colcon / ament — jangan di-commit
+build/
+install/
+log/
+
+# Editor / OS
+.vscode/
+*.swp
+.DS_Store
