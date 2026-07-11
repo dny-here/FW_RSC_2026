@@ -1,0 +1,29 @@
+# ACTION: TargetAirdrop
+# Orchestrates the long-running process of aligning the fixed-wing 
+# UAV and executing a precision payload drop based on vision data.
+
+# Goal
+# The final, locked WGS84 coordinate of the target. This is sent 
+# only after the vision node has gathered enough frames (e.g., 75) 
+# to confidently overcome camera jitter and wind disturbances.
+
+interfaces/TargetEstimate gps_estimation
+
+---
+
+# Result
+# The final outcome of the mission. This is triggered only once, 
+# after the aircraft has passed the computed release point and 
+# fired the payload servo (or if the mission is forcibly aborted).
+
+bool drop_successful
+
+---
+
+# Feedback
+# Continuous telemetry streamed at a fixed rate (e.g., 10Hz) while 
+# the UAV flies the Dubins path. This allows the system to monitor 
+# which flight phase is active (Transit, Loiter, Final Approach) 
+# and track the remaining distance to the release point.
+
+interfaces/AirdropStatus current_status

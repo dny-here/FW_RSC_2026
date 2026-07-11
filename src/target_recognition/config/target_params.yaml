@@ -1,0 +1,46 @@
+target_recognition_node:
+  ros__parameters:
+    
+    # HSV Thresholds for the target (e.g., Orange Tarp)
+    thresholding:
+      high_H: 25
+      high_S: 255
+      high_V: 255
+      low_H: 10
+      low_S: 100
+      low_V: 100
+    
+    # Camera lens distortion coefficients (k1, k2, p1, p2, k3)
+    distortion:
+      coef_1: -0.41802327018241026
+      coef_2: 0.50715243805833121
+      coef_3: 0.0
+      coef_4: 0.0
+      coef_5: -0.57843596847939704
+    
+    # Intrinsic Camera Matrix (3x3)
+    # [ fx   0  cx ]
+    # [  0  fy  cy ]
+    # [  0   0   1 ]
+    camera:
+      mat_11: 657.46697810243404
+      mat_12: 0.0
+      mat_13: 319.5
+      mat_21: 0.0
+      mat_22: 657.46697810243404
+      mat_23: 239.5
+      mat_31: 0.0
+      mat_32: 0.0
+      mat_33: 1.0
+    
+    # Map Anchor (if needed for relative coordinate checks)
+    starting:
+      long_ref: 0.0
+      lat_ref: 0.0
+      height_ref: 0.0
+    
+    # Subscription Topics
+    topics:
+      odom: "mavros/local_position/odom"
+      camera: "camera_node" # Note: often this is "camera/image_raw" on real hardware
+      position: "mavros/global_position/global"
