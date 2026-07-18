@@ -77,6 +77,7 @@ private:
     
     State state_;
     int detection_counter_; // Tracks successful Kalman filter updates
+    uint8_t active_dz_{0};
     GPSCoordinate final_target_;
     
     // -------------- ROS2 Pointers -----------------------
@@ -318,6 +319,7 @@ private:
         estimate_msg.covariance = {0.0, 0.0, 0.0, 0.0}; // Explicit zero initialization
         
         goal_msg.gps_estimation = estimate_msg;
+        goal_msg.bay_index = active_dz_;
 
         // Bind callbacks to monitor the asynchronous execution
         auto send_goal_options = rclcpp_action::Client<TargetAirdrop>::SendGoalOptions();
@@ -360,6 +362,7 @@ private:
             case rclcpp_action::ResultCode::SUCCEEDED:
                 RCLCPP_INFO(this->get_logger(), "Airdrop Complete! Success: %d", result.result->drop_successful);
                 
+                if (result.result->drop_successful) ++active_dz_; // Inc to next dz
                 // Auto-reset the mission node for subsequent payload deployments
                 state_ = STATE_SEARCHING; 
                 detection_counter_ = 0;
