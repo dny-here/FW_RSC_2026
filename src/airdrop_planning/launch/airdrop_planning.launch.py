@@ -17,4 +17,11 @@ def generate_launch_description():
             output='screen',
             parameters=[params],
         ),
+        Node(
+            package='airdrop_planning',
+            executable='mission_bridge_node',
+            name='mission_bridge',
+            output='screen',
+            parameters=[params],
+        ),
     ])
