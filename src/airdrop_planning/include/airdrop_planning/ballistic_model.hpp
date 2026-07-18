@@ -1,12 +1,3 @@
-// ballistic_model.hpp
-// Model balistik payload jatuh bebas dengan drag + angin.
-// Referensi: Mathisen et al., "Autonomous Ballistic Airdrop of Objects
-// from a Small Fixed-Wing UAV" — persamaan (3), (4) dan wind profile
-// power law persamaan (5) (Touma 1977, p = 1/7).
-//
-// Frame: NED lokal. x = North, y = East, z = Down.
-// Ketinggian h diukur AGL sehingga integrasi berhenti saat h <= 0.
-
 #ifndef AIRDROP_PLANNING__BALLISTIC_MODEL_HPP_
 #define AIRDROP_PLANNING__BALLISTIC_MODEL_HPP_
 
@@ -18,7 +9,7 @@ namespace airdrop_planning
 
 struct BallisticParams
 {
-  double mass_kg{0.5};          // payload KRTI: kayu 500 g
+  double mass_kg{0.5};
   double drag_coeff{0.8};       // C_D — WAJIB diidentifikasi lewat drop test
   double ref_area_m2{0.01};     // A, luas frontal payload [m^2]
   double air_density{1.225};    // rho [kg/m^3]
@@ -29,7 +20,7 @@ struct BallisticParams
 
 struct BallisticResult
 {
-  double offset_north_m{0.0};   // x : perpindahan horizontal payload selama jatuh
+  double offset_north_m{0.0};   // x
   double offset_east_m{0.0};    // y
   double fall_time_s{0.0};
   double impact_speed_ms{0.0};

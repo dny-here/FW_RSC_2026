@@ -25,9 +25,9 @@ namespace airdrop_planning
 
 struct ApproachParams
 {
-  double release_alt_agl{50.0};     // [m]  (paper memakai 50 m)
-  double release_airspeed{18.0};    // [m/s] airspeed komando saat release
-  double approach_distance{300.0};  // d  [m] panjang final approach
+  double release_alt_agl{100.0};     // [m]
+  double release_airspeed{18.0};    // [m/s] bisa ganti
+  double approach_distance{300.0};  // d  [m]
   double loiter_radius{80.0};       // r  [m]
   double min_wind_for_heading{1.0}; // [m/s] di bawah ini arah angin diabaikan
 };
@@ -49,20 +49,15 @@ public:
   ReleasePointSolver(const BallisticParams & bp, const ApproachParams & ap)
   : model_(bp), ap_(ap) {}
 
-  // target_ned  : posisi target di frame lokal
-  // uav_ned     : posisi wahana saat ini (untuk kasus angin ~ 0)
-  // wind_ned    : vektor angin (KE mana udara bergerak), komponen (n, e)
-  // ground_vel  : jika berhingga (saat replan di titik p), pakai ground
-  //               velocity aktual wahana sebagai kecepatan awal payload;
-  //               jika nullptr, prediksi = airspeed*heading + wind.
+  // ---------- perencanaan awal ----------
+  // target_ned : posisi target di frame lokal
+  // uav_ned    : posisi wahana saat ini (untuk kasus angin ~ 0)
+  // wind_ned   : vektor angin (KE mana udara bergerak), komponen (n, e)
   ApproachPlanNed solve(
     const Ned2D & target_ned,
     const Ned2D & uav_ned,
-    const std::array<double, 2> & wind_ned,
-    const std::array<double, 3> * ground_vel = nullptr) const
+    const std::array<double, 2> & wind_ned) const
   {
-    ApproachPlanNed plan;
-
     // --- arah approach: melawan angin ---
     const double wind_speed = std::hypot(wind_ned[0], wind_ned[1]);
     double heading;
@@ -74,18 +69,48 @@ public:
       heading = std::atan2(target_ned.east - uav_ned.east,
           target_ned.north - uav_ned.north);
     }
-    plan.approach_heading = heading;
 
-    // --- kecepatan awal payload (== ground velocity wahana saat release) ---
-    std::array<double, 3> v0;
-    if (ground_vel != nullptr) {
-      v0 = *ground_vel;
-    } else {
-      v0 = {
-        ap_.release_airspeed * std::cos(heading) + wind_ned[0],
-        ap_.release_airspeed * std::sin(heading) + wind_ned[1],
-        0.0};
-    }
+    // Prediksi ground velocity saat rilis = airspeed*heading + angin.
+    const std::array<double, 3> v0{
+      ap_.release_airspeed * std::cos(heading) + wind_ned[0],
+      ap_.release_airspeed * std::sin(heading) + wind_ned[1],
+      0.0};
+
+    return buildPlan(target_ned, heading, v0, wind_ned);
+  }
+
+  // ---------- replan di titik p ----------
+  // heading         : arah garis approach semula — TIDAK berubah.
+  // ground_speed    : ground speed horizontal aktual wahana, SETELAH
+  //                   dikurangi konstanta reduksi (paper: 2 m/s bila motor
+  //                   dimatikan sebelum rilis; ~0 bila motor tetap on).
+  // wind_ned        : angin yang dipakai saat perencanaan awal — sesuai
+  //                   paper, angin TIDAK di-update lagi setelah titik p.
+  ApproachPlanNed solveAlongHeading(
+    const Ned2D & target_ned,
+    double heading,
+    double ground_speed,
+    const std::array<double, 2> & wind_ned) const
+  {
+    const std::array<double, 3> v0{
+      ground_speed * std::cos(heading),
+      ground_speed * std::sin(heading),
+      0.0};
+    return buildPlan(target_ned, heading, v0, wind_ned);
+  }
+
+  const ApproachParams & params() const {return ap_;}
+
+private:
+  // Algorithm 1 + geometri Fig. 5 untuk heading & v0 yang sudah ditentukan.
+  ApproachPlanNed buildPlan(
+    const Ned2D & target_ned,
+    double heading,
+    const std::array<double, 3> & v0,
+    const std::array<double, 2> & wind_ned) const
+  {
+    ApproachPlanNed plan;
+    plan.approach_heading = heading;
 
     // --- Algorithm 1: simulasi balistik lalu geser target (-x, -y) ---
     const auto bal = model_.simulate(ap_.release_alt_agl, v0, wind_ned);
@@ -107,16 +132,12 @@ public:
     // Pusat loiter s: tangen di p, loiter clockwise (belok kanan),
     // sehingga pusat berada di sisi KANAN arah terbang.
     // Unit "kanan" dari heading psi (N->E, CW): (-sin psi, cos psi).
-    // Cek: psi = 0 (North) -> kanan = (0, 1) = East. Benar.
     plan.loiter_center.north = plan.entry_point.north - ap_.loiter_radius * std::sin(heading);
     plan.loiter_center.east = plan.entry_point.east + ap_.loiter_radius * std::cos(heading);
 
     return plan;
   }
 
-  const ApproachParams & params() const {return ap_;}
-
-private:
   BallisticModel model_;
   ApproachParams ap_;
 };
