@@ -2,11 +2,12 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>airdrop_planning</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>
-    Node Airdrop Planning KRTI 2026 FW: menghitung release point (model
-    balistik + wind power law), truncated Dubins approach, trigger drop,
-    dan penanganan missed target. Berbasis Mathisen et al. (prec_drop).
+    Node Airdrop Planning KRTI 2026 FW: action server "execute_airdrop" —
+    menghitung release point (model balistik + wind power law), truncated
+    Dubins approach, replan di titik p, trigger drop via DO_SET_SERVO, dan
+    penanganan missed target.
   </description>
   <maintainer email="iniakundanny@gmail.com">danny</maintainer>
   <license>Apache-2.0</license>
@@ -14,10 +15,11 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
   <depend>interfaces</depend>
 
   <exec_depend>ros2launch</exec_depend>

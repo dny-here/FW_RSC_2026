@@ -1,29 +1,27 @@
 # ACTION: TargetAirdrop
-# Orchestrates the long-running process of aligning the fixed-wing 
-# UAV and executing a precision payload drop based on vision data.
+# Server : node airdrop_planning  (nama action: "execute_airdrop")
+# Client : node target_recognition
 
-# Goal
-# The final, locked WGS84 coordinate of the target. This is sent 
-# only after the vision node has gathered enough frames (e.g., 75) 
-# to confidently overcome camera jitter and wind disturbances.
-
+# ------------------------------ Goal ------------------------------
+# Koordinat target final (WGS-84) hasil georeferencing, dikirim hanya
+# setelah node visi mengumpulkan cukup deteksi (mis. 75 frame).
 interfaces/TargetEstimate gps_estimation
 
+# Bay mekanisme dropping yang akan dilepas untuk goal ini (0 atau 1).
+uint8 bay_index
+
 ---
-
-# Result
-# The final outcome of the mission. This is triggered only once, 
-# after the aircraft has passed the computed release point and 
-# fired the payload servo (or if the mission is forcibly aborted).
-
+# ----------------------------- Result -----------------------------
+# Dikirim sekali: setelah payload dilepas (succeed), atau saat goal
+# di-abort (missed target berulang / drop service gagal) atau cancel.
 bool drop_successful
+string message                 # keterangan human-readable utk log/GCS
+float64 release_miss_m         # jarak wahana ke release point saat rilis [m]
+uint8 replans                  # berapa kali replan akibat missed target
 
 ---
-
-# Feedback
-# Continuous telemetry streamed at a fixed rate (e.g., 10Hz) while 
-# the UAV flies the Dubins path. This allows the system to monitor 
-# which flight phase is active (Transit, Loiter, Final Approach) 
-# and track the remaining distance to the release point.
-
+# ---------------------------- Feedback ----------------------------
+# Telemetri kontinu (rate = loop FSM, ~20 Hz) selama wahana menjalani
+# truncated Dubins path: fase aktif (Transit/Loiter/Final Approach)
+# dan jarak tersisa ke release point.
 interfaces/AirdropStatus current_status
