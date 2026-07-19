@@ -1,0 +1,74 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="alti_transition_runway">
+    <plugin filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu">
+    </plugin>
+    <plugin filename="gz-sim-navsat-system"
+      name="gz::sim::systems::NavSat">
+    </plugin>
+
+    <scene>
+      <ambient>1.0 1.0 1.0</ambient>
+      <background>0.8 0.8 0.8</background>
+      <sky></sky>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.8 0.8 0.8 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Base Runway / Home Point (H) -->
+    <include>
+      <pose degrees="true">-29 545 0 0 0 363</pose>
+      <uri>model://runway</uri>
+    </include>
+
+    <!-- UAV Starting Position -->
+    <include>
+      <pose degrees="true">0 0 0.35 0 0 90</pose>
+      <uri>model://alti_transition_quad</uri>
+    </include>
+    
+    <!-- DZ-1 (Top Drop Zone from Image) -->
+    <!-- Positioned approx 560m from Home. Height set to 4.2m -->
+    <include>
+      <uri>model://orange_tarp_target</uri>
+      <name>dz_1</name>
+      <pose>400.0 400.0 4.2 0 0 0</pose>
+    </include>
+
+    <!-- DZ-2 (Right Drop Zone from Image) -->
+    <!-- Positioned 600m from Home. Height set to 2.5m -->
+    <include>
+      <uri>model://orange_tarp_target</uri>
+      <name>dz_2</name>
+      <pose>600.0 0.0 2.5 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>
