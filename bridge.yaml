@@ -1,0 +1,5 @@
+- ros_topic_name : "camera_node"
+  gz_topic_name : "world/alti_transition_runway/model/alti_transition_quad/model/gimbal/link/pitch_link/sensor/camera/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction : "GZ_TO_ROS"
