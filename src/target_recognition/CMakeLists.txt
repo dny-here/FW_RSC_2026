@@ -37,6 +37,7 @@ add_executable(target_detection src/targetdetection.cpp)
 # Include Directories & Linking
 target_include_directories(target_detection PUBLIC 
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
 )
 
@@ -54,8 +55,10 @@ ament_target_dependencies(target_detection
 )
 
 # Link OpenCV
-target_link_libraries(target_detection ${OpenCV_LIBS})
-
+target_link_libraries(
+  target_detection ${OpenCV_LIBS}
+  rclcpp_action::rclcpp_action
+)
 
 # Install Directives
 # Install the executable

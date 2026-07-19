@@ -36,8 +36,8 @@ public:
         declareParams();
         loadParams();
 
-        cv::namedWindow("Video Capture");
-        cv::namedWindow("Object Detection");
+        gui_timer_ = this->create_wall_timer(
+        33ms, std::bind(&TargetDetectionNode::updateGuiLoop, this));
 
         // Use SensorDataQoS to handle high-frequency topics (like video) by dropping old messages if lagging
         rclcpp::QoS qos_profile = rclcpp::SensorDataQoS();
@@ -69,6 +69,10 @@ public:
 private:
    // -------------- State Variabels -----------------------
     ThresholdingParams thresholding_params;
+    rclcpp::TimerBase::SharedPtr gui_timer_;
+    bool windows_initialized_ = false;
+    cv::Mat current_frame_;
+    cv::Mat current_threshold_;
     cv::Mat distortion_params;
     cv::Mat camera_params;
     
@@ -76,8 +80,17 @@ private:
     TargetFilter2D dropZoneFilter; 
     
     State state_;
+    uint8_t active_dz_{0};
     int detection_counter_; // Tracks successful Kalman filter updates
     GPSCoordinate final_target_;
+
+    cv::Mat prev_gray_frame_;
+    std::vector<cv::Point2f> prev_features_;
+    TelemetryParams prev_telemetry_;
+    const double PARALLAX_DISTANCE_THRESHOLD = 2.0; 
+    
+    // This will hold the live height to feed the action server
+    double estimated_object_height_ = 0.0;
     
     // -------------- ROS2 Pointers -----------------------
     rclcpp_action::Client<TargetAirdrop>::SharedPtr action_client_;
@@ -168,9 +181,6 @@ private:
     // -------------- Camera Loading -----------------------
     void cameraCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
     {
-        // CPU Optimization: Suspend expensive image processing while the planner executes the drop
-        if (state_ == STATE_LOCKED || state_ == STATE_WAITING) return;
-
         cv::Mat frame;
         try {
             frame = cv_bridge::toCvCopy(msg, "bgr8")->image;
@@ -181,13 +191,54 @@ private:
 
         if (frame.empty()) return;
 
+        current_frame_ = frame.clone();
+        
+        // CPU Optimization: Suspend expensive image processing while the planner executes the drop
+        if (state_ == STATE_LOCKED || state_ == STATE_WAITING) return;
+
         // Isolate visual targets from the frame
         std::vector<cv::Point2f> valid_targets = processImage(frame);
+
+        // Define the target bounding box for the optical flow
+        cv::Rect target_rect;
+        if (!valid_targets.empty()) {
+            // Create a roughly 40x40 pixel box around the center coordinate
+            target_rect = cv::Rect(valid_targets[0].x - 20, valid_targets[0].y - 20, 40, 40);
+        }
+
+        // Run the background height estimator
+        estimateHeight(frame, telemetry_params, target_rect);
 
         // Feed targets into the state machine to determine mission progress
         updateMissionState(valid_targets);
 
-        cv::waitKey(1); // Flush OpenCV GUI buffer
+    }
+
+    void updateGuiLoop()
+    {
+        // Initialize windows once the node is actively spinning in the main loop
+        if (!windows_initialized_) {
+            cv::namedWindow("Video Capture", cv::WINDOW_AUTOSIZE);
+            cv::namedWindow("Object Detection", cv::WINDOW_AUTOSIZE);
+            windows_initialized_ = true;
+        }
+
+        // If frames are available, update the display matrix; otherwise show a clean fallback buffer
+        if (!current_frame_.empty()) {
+            cv::imshow("Video Capture", current_frame_);
+        } else {
+            cv::Mat blank = cv::Mat::zeros(480, 640, CV_8UC3);
+            cv::putText(blank, "Waiting for video stream...", cv::Point(50, 240), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+            cv::imshow("Video Capture", blank);
+        }
+
+        if (!current_threshold_.empty()) {
+            cv::imshow("Object Detection", current_threshold_);
+        }
+
+        // Force the OS X11/Wayland window server to process the window events
+        cv::waitKey(1);
     }
 
     // -------------- Image Processing -----------------------
@@ -227,10 +278,74 @@ private:
             circle(frame, cv::Point2f(center_x, center_y), 4, cv::Scalar(0, 255, 0), -1); 
         }
 
-        cv::imshow("Video Capture", frame);
-        cv::imshow("Object Detection", frame_threshold);
+        current_threshold_ = frame_threshold.clone();
+        
 
         return valid_centers;
+    }
+
+    // -------------- Height Estimation -----------------------
+    double calculatePhysicalTranslation(const TelemetryParams& t1, const TelemetryParams& t2) {
+        double dy = (t2.lat - t1.lat) * 111320.0;
+        double dx = (t2.lon - t1.lon) * 111320.0 * cos(t1.lat * M_PI / 180.0);
+        return std::sqrt(dx*dx + dy*dy);
+    }
+
+    void estimateHeight(const cv::Mat& current_frame, const TelemetryParams& current_telemetry, const cv::Rect& target_box) {
+        cv::Mat current_gray;
+        cv::cvtColor(current_frame, current_gray, cv::COLOR_BGR2GRAY);
+
+        // Initialize first frame
+        if (prev_gray_frame_.empty() || prev_features_.empty()) {
+            prev_gray_frame_ = current_gray.clone();
+            prev_telemetry_ = current_telemetry;
+            cv::goodFeaturesToTrack(prev_gray_frame_, prev_features_, 100, 0.01, 10);
+            return;
+        }
+
+        // Wait for enough physical movement (Parallax)
+        double translation = calculatePhysicalTranslation(prev_telemetry_, current_telemetry);
+        if (translation < PARALLAX_DISTANCE_THRESHOLD) return;
+
+        std::vector<cv::Point2f> current_features;
+        std::vector<uchar> status;
+        std::vector<float> err;
+        cv::calcOpticalFlowPyrLK(prev_gray_frame_, current_gray, prev_features_, current_features, status, err);
+
+        double ground_sum = 0.0, object_sum = 0.0;
+        int ground_count = 0, object_count = 0;
+        double fx = camera_params.at<double>(0, 0); 
+
+        for (size_t i = 0; i < current_features.size(); i++) {
+            if (status[i]) {
+                double displacement = cv::norm(current_features[i] - prev_features_[i]);
+                if (displacement > 1.0) {
+                    double distance = fx * (translation / displacement);
+                    if (target_box.contains(current_features[i])) {
+                        object_sum += distance;
+                        object_count++;
+                    } else {
+                        ground_sum += distance;
+                        ground_count++;
+                    }
+                }
+            }
+        }
+
+        if (ground_count > 5 && object_count > 3) {
+            double avg_ground = ground_sum / ground_count;
+            double avg_object = object_sum / object_count;
+            double absolute_height = avg_ground - avg_object;
+
+            if (absolute_height > 0.0 && absolute_height < 50.0) { // Sanity check max height
+                estimated_object_height_ = absolute_height;
+            }
+        }
+
+        // Cycle the buffers
+        prev_gray_frame_ = current_gray.clone();
+        prev_telemetry_ = current_telemetry;
+        cv::goodFeaturesToTrack(prev_gray_frame_, prev_features_, 100, 0.01, 10);
     }
 
     // -------------- Georeferencing -----------------------
@@ -245,6 +360,7 @@ private:
             
             // Map the smoothed local coordinate back to global GPS for the planner
             out_gps = localNEDToGlobalGPS(filtered_ned, telemetry_params);
+            out_gps.alt = estimated_object_height_;
             return true;
         }
         return false;
@@ -276,9 +392,13 @@ private:
                     detection_counter_++;
                     
                     // Temporal filter: Require multiple frames to confirm the target is stable
-                    if (detection_counter_ >= 75) {
+                    if (detection_counter_ >= 30) {
                         state_ = STATE_LOCKED;
-                        RCLCPP_INFO(this->get_logger(), "Coordinate Locked! Triggering Action.");
+                        RCLCPP_INFO(this->get_logger(), 
+                            "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Triggering Action.",
+                            final_target_.lat, 
+                            final_target_.lon, 
+                            final_target_.alt);
                         performAction(final_target_);
                     }
                 }
@@ -318,6 +438,7 @@ private:
         estimate_msg.covariance = {0.0, 0.0, 0.0, 0.0}; // Explicit zero initialization
         
         goal_msg.gps_estimation = estimate_msg;
+        goal_msg.bay_index = active_dz_;
 
         // Bind callbacks to monitor the asynchronous execution
         auto send_goal_options = rclcpp_action::Client<TargetAirdrop>::SendGoalOptions();
@@ -360,6 +481,7 @@ private:
             case rclcpp_action::ResultCode::SUCCEEDED:
                 RCLCPP_INFO(this->get_logger(), "Airdrop Complete! Success: %d", result.result->drop_successful);
                 
+                if (result.result->drop_successful) ++active_dz_;
                 // Auto-reset the mission node for subsequent payload deployments
                 state_ = STATE_SEARCHING; 
                 detection_counter_ = 0;

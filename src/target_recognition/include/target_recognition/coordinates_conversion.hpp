@@ -38,7 +38,7 @@ public:
 
         // Measurement Noise: High (25.0) to distrust individual frames and favor the smoothed average.
         // This compensates for gimbal vibrations and pixel resolution limits.
-        cv::setIdentity(kf.measurementNoiseCov, cv::Scalar::all(25.0)); 
+        cv::setIdentity(kf.measurementNoiseCov, cv::Scalar::all(5.0)); 
 
         // Initial uncertainty: High, allowing the filter to quickly snap to the first few measurements.
         cv::setIdentity(kf.errorCovPost, cv::Scalar::all(100.0));
