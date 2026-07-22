@@ -347,7 +347,7 @@ private:
               "Payload dilepas, miss " + std::to_string(release_miss_) + " m.");
           } else if (drop_ack_ == DropAck::FAILED) {
             finish(rclcpp_action::ResultCode::ABORTED, false,
-              "FCU menolak perintah DO_SET_SERVO.");
+              "Drop service melaporkan gagal (success=false).");
           } else if (waited > drop_ack_timeout_) {
             finish(rclcpp_action::ResultCode::ABORTED, false,
               "Timeout menunggu ACK drop service.");

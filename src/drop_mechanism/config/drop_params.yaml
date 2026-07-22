@@ -1,0 +1,7 @@
+drop_relay:
+  ros__parameters:
+    drop_service: "drop"                 # samakan dgn topics.drop_service planner
+    command_service: "mavros/cmd/command"
+    servo_channel_bay: [9, 10]           # channel AUX servo bay 0 & 1 — SESUAIKAN wiring
+    pwm_release: 1900                     # PWM posisi "lepas"
+    command_timeout: 2.0                  # s tunggu ACK MAVROS
