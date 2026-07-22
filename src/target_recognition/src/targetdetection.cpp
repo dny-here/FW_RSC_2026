@@ -9,6 +9,7 @@
 // Action and Custom Message Dependencies
 #include "interfaces/msg/target_estimate.hpp"
 #include "interfaces/msg/airdrop_status.hpp"
+#include "interfaces/msg/drop_authorization.hpp"
 #include "interfaces/action/target_airdrop.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
@@ -58,9 +59,15 @@ public:
 
         // High-speed camera subscriber driving the main node logic
         subscription_camera_ = this->create_subscription<sensor_msgs::msg::Image>(
-             get_parameter("topics.camera").as_string(), qos_profile, 
+             get_parameter("topics.camera").as_string(), qos_profile,
              std::bind(&TargetDetectionNode::cameraCallback, this, _1));
-             
+
+        // Otorisasi drop dari mission_bridge (latched: nilai terakhir diterima meski subscribe belakangan)
+        rclcpp::QoS latched(1); latched.transient_local();
+        subscription_auth_ = this->create_subscription<interfaces::msg::DropAuthorization>(
+            "mission/drop_authorized", latched,
+            std::bind(&TargetDetectionNode::onDropAuthorized, this, _1));
+
         // Initialize mission state
         state_ = STATE_SEARCHING;
         detection_counter_ = 0;
@@ -81,6 +88,7 @@ private:
     
     State state_;
     uint8_t active_dz_{0};
+    bool drop_authorized_{false};
     int detection_counter_; // Tracks successful Kalman filter updates
     GPSCoordinate final_target_;
 
@@ -97,6 +105,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_camera_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_odom_;
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr subscription_position_;
+    rclcpp::Subscription<interfaces::msg::DropAuthorization>::SharedPtr subscription_auth_;
 
     // -------------- Initialization -----------------------
     void declareParams()
@@ -394,12 +403,12 @@ private:
                     // Temporal filter: Require multiple frames to confirm the target is stable
                     if (detection_counter_ >= 30) {
                         state_ = STATE_LOCKED;
-                        RCLCPP_INFO(this->get_logger(), 
-                            "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Triggering Action.",
-                            final_target_.lat, 
-                            final_target_.lon, 
-                            final_target_.alt);
-                        performAction(final_target_);
+                        RCLCPP_INFO(this->get_logger(),
+                            "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Menunggu otorisasi drop.",
+                            final_target_.lat, final_target_.lon, final_target_.alt);
+                        if (drop_authorized_) {
+                            performAction(final_target_);
+                        }
                     }
                 }
                 break;
@@ -413,6 +422,18 @@ private:
                 
             default:
                 break;
+        }
+    }
+
+    // Otorisasi dari mission_bridge: drop boleh dieksekusi utk DZ ini.
+    void onDropAuthorized(const interfaces::msg::DropAuthorization::ConstSharedPtr msg)
+    {
+        if (!msg->authorized || msg->dz_index != active_dz_) return;
+        drop_authorized_ = true;
+        RCLCPP_INFO(this->get_logger(), "Drop diotorisasi untuk DZ %u.", active_dz_);
+        // Jika koordinat sudah ter-lock lebih dulu, kirim goal sekarang.
+        if (state_ == STATE_LOCKED) {
+            performAction(final_target_);
         }
     }
 
@@ -482,8 +503,9 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Airdrop Complete! Success: %d", result.result->drop_successful);
                 
                 if (result.result->drop_successful) ++active_dz_;
+                drop_authorized_ = false;
                 // Auto-reset the mission node for subsequent payload deployments
-                state_ = STATE_SEARCHING; 
+                state_ = STATE_SEARCHING;
                 detection_counter_ = 0;
                 break;
             case rclcpp_action::ResultCode::ABORTED:
