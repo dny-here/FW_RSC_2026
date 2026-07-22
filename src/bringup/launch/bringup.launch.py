@@ -67,11 +67,18 @@ def generate_launch_description():
         )
     )
 
+    # 7. Mission Bridge Launch
+    mission_bridge_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('mission_bridge'), 'launch', 'mission_bridge.launch.py')
+        )
+    )
+
     # --- DELAY CUSTOM NODES ---
     # Waits 20 seconds before launching your code so MAVROS is fully initialized
     delayed_custom_nodes = TimerAction(
         period=20.0,
-        actions=[target_recognition_launch, airdrop_planner_node]
+        actions=[target_recognition_launch, airdrop_planner_launch, mission_bridge_launch]
     )
 
     return LaunchDescription([
