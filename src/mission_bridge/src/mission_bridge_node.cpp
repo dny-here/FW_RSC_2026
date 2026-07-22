@@ -1,0 +1,252 @@
+// mission_bridge_node.cpp
+// Konduktor fase-misi DZ (Opsi C hybrid). Menerjemahkan output MissionFsm
+// menjadi aksi MAVROS: otorisasi drop, switch GUIDED/AUTO, dan streaming
+// setpoint global menuju entry -> release (L1/TECS ArduPilot yang terbang).
+#include <cmath>
+#include <memory>
+#include <optional>
+#include <string>
+
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/nav_sat_fix.hpp"
+#include "geographic_msgs/msg/geo_pose_stamped.hpp"
+#include "mavros_msgs/msg/waypoint_reached.hpp"
+#include "mavros_msgs/srv/set_mode.hpp"
+
+#include "interfaces/msg/airdrop_plan.hpp"
+#include "interfaces/msg/airdrop_status.hpp"
+#include "interfaces/msg/drop_authorization.hpp"
+
+#include "mission_bridge/mission_fsm.hpp"
+
+using namespace std::chrono_literals;
+
+namespace mission_bridge
+{
+
+class MissionBridgeNode : public rclcpp::Node
+{
+public:
+  MissionBridgeNode()
+  : Node("mission_bridge")
+  {
+    declare_parameter("dz_index", 0);
+    declare_parameter("dz_loiter_wp_index", 0);
+    declare_parameter("plan_wait_timeout", 20.0);
+    declare_parameter("approach_timeout", 60.0);
+    declare_parameter("entry_reach_radius", 30.0);
+    declare_parameter("guided_mode_name", std::string("GUIDED"));
+    declare_parameter("auto_mode_name", std::string("AUTO"));
+
+    dz_index_ = static_cast<uint8_t>(get_parameter("dz_index").as_int());
+    dz_loiter_wp_index_ = static_cast<uint16_t>(get_parameter("dz_loiter_wp_index").as_int());
+    approach_timeout_ = get_parameter("approach_timeout").as_double();
+    entry_reach_radius_ = get_parameter("entry_reach_radius").as_double();
+    guided_mode_name_ = get_parameter("guided_mode_name").as_string();
+    auto_mode_name_ = get_parameter("auto_mode_name").as_string();
+
+    fsm_ = std::make_unique<MissionFsm>(
+      FsmConfig{get_parameter("plan_wait_timeout").as_double()});
+
+    auto sensor_qos = rclcpp::SensorDataQoS();
+    rclcpp::QoS latched(1); latched.transient_local();
+
+    sub_reached_ = create_subscription<mavros_msgs::msg::WaypointReached>(
+      "mavros/mission/reached", sensor_qos,
+      std::bind(&MissionBridgeNode::onReached, this, std::placeholders::_1));
+    sub_globalpos_ = create_subscription<sensor_msgs::msg::NavSatFix>(
+      "mavros/global_position/global", sensor_qos,
+      std::bind(&MissionBridgeNode::onGlobalPos, this, std::placeholders::_1));
+    sub_plan_ = create_subscription<interfaces::msg::AirdropPlan>(
+      "airdrop/plan", 10,
+      std::bind(&MissionBridgeNode::onPlan, this, std::placeholders::_1));
+    sub_status_ = create_subscription<interfaces::msg::AirdropStatus>(
+      "airdrop/status", 10,
+      std::bind(&MissionBridgeNode::onStatus, this, std::placeholders::_1));
+
+    pub_auth_ = create_publisher<interfaces::msg::DropAuthorization>(
+      "mission/drop_authorized", latched);
+    pub_setpoint_ = create_publisher<geographic_msgs::msg::GeoPoseStamped>(
+      "mavros/setpoint_position/global", 10);
+
+    cli_set_mode_ = create_client<mavros_msgs::srv::SetMode>("mavros/set_mode");
+
+    timer_ = create_wall_timer(100ms, std::bind(&MissionBridgeNode::update, this));
+
+    RCLCPP_INFO(get_logger(),
+      "mission_bridge siap (DZ %u, loiter wp %u). Menunggu loiter selesai...",
+      dz_index_, dz_loiter_wp_index_);
+  }
+
+private:
+  using AirdropStatus = interfaces::msg::AirdropStatus;
+
+  void onReached(const mavros_msgs::msg::WaypointReached::SharedPtr msg)
+  {
+    if (msg->wp_seq == dz_loiter_wp_index_) {
+      loiter_reached_ = true;
+    }
+  }
+
+  void onGlobalPos(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+  {
+    veh_lat_ = msg->latitude;
+    veh_lon_ = msg->longitude;
+    veh_alt_ = msg->altitude;
+    have_veh_pos_ = true;
+  }
+
+  void onPlan(const interfaces::msg::AirdropPlan::SharedPtr msg)
+  {
+    plan_ = *msg;
+    plan_available_ = true;
+  }
+
+  void onStatus(const AirdropStatus::SharedPtr msg)
+  {
+    if (msg->state == AirdropStatus::STATE_RELEASED) {
+      saw_released_ = true;
+    }
+  }
+
+  // haversine [m]
+  static double distMeters(double lat1, double lon1, double lat2, double lon2)
+  {
+    constexpr double R = 6378137.0;
+    const double dlat = (lat2 - lat1) * M_PI / 180.0;
+    const double dlon = (lon2 - lon1) * M_PI / 180.0;
+    const double a = std::sin(dlat / 2) * std::sin(dlat / 2) +
+      std::cos(lat1 * M_PI / 180.0) * std::cos(lat2 * M_PI / 180.0) *
+      std::sin(dlon / 2) * std::sin(dlon / 2);
+    return 2.0 * R * std::asin(std::min(1.0, std::sqrt(a)));
+  }
+
+  void publishSetpoint(double lat, double lon, double alt)
+  {
+    geographic_msgs::msg::GeoPoseStamped sp;
+    sp.header.stamp = now();
+    sp.header.frame_id = "map";
+    sp.pose.position.latitude = lat;
+    sp.pose.position.longitude = lon;
+    sp.pose.position.altitude = alt;
+    sp.pose.orientation.w = 1.0;
+    pub_setpoint_->publish(sp);
+  }
+
+  void setMode(const std::string & mode)
+  {
+    if (!cli_set_mode_->service_is_ready()) {
+      RCLCPP_ERROR(get_logger(), "set_mode service belum siap; gagal minta mode %s",
+        mode.c_str());
+      return;
+    }
+    auto req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+    req->custom_mode = mode;
+    cli_set_mode_->async_send_request(req,
+      [this, mode](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture fut) {
+        RCLCPP_INFO(get_logger(), "set_mode %s -> mode_sent=%d",
+          mode.c_str(), fut.get()->mode_sent);
+      });
+  }
+
+  void update()
+  {
+    // hitung drop_finished/success dari status + timeout backstop
+    bool drop_finished = false;
+    bool drop_success = false;
+    if (fsm_->phase() == Phase::DROP_APPROACH) {
+      const double elapsed = (now() - approach_start_).seconds();
+      drop_finished = saw_released_ || (elapsed > approach_timeout_);
+      drop_success = saw_released_;
+    }
+
+    FsmInput in;
+    in.loiter_reached = loiter_reached_;
+    in.plan_available = plan_available_;
+    in.drop_finished = drop_finished;
+    in.drop_success = drop_success;
+    in.now_s = now().seconds();
+
+    const Phase before = fsm_->phase();
+    FsmOutput out = fsm_->step(in);
+
+    if (out.authorize_now) {
+      interfaces::msg::DropAuthorization a;
+      a.header.stamp = now();
+      a.dz_index = dz_index_;
+      a.authorized = true;
+      pub_auth_->publish(a);
+      RCLCPP_INFO(get_logger(),
+        "Loiter 2x selesai -> OTORISASI drop DZ %u", dz_index_);
+    }
+
+    if (before != Phase::DROP_APPROACH && out.phase == Phase::DROP_APPROACH) {
+      approach_start_ = now();
+      hold_alt_amsl_ = have_veh_pos_ ? veh_alt_ : plan_.release_altitude_agl;
+      entry_reached_ = false;
+      RCLCPP_INFO(get_logger(), "Mulai DROP_APPROACH (hold alt %.1f m AMSL)",
+        hold_alt_amsl_);
+    }
+
+    if (out.mode_cmd == ModeCmd::GUIDED) {setMode(guided_mode_name_);}
+    if (out.mode_cmd == ModeCmd::AUTO) {setMode(auto_mode_name_);}
+
+    if (out.drop_failed) {
+      RCLCPP_WARN(get_logger(), "Drop DZ %u DICATAT GAGAL.", dz_index_);
+    }
+
+    // streaming setpoint approach: entry dulu, lalu release
+    if (fsm_->phase() == Phase::DROP_APPROACH && plan_available_ && have_veh_pos_) {
+      if (!entry_reached_) {
+        const double d = distMeters(veh_lat_, veh_lon_,
+          plan_.entry_point_lat, plan_.entry_point_lon);
+        if (d < entry_reach_radius_) {entry_reached_ = true;}
+      }
+      if (entry_reached_) {
+        publishSetpoint(plan_.release_point_lat, plan_.release_point_lon, hold_alt_amsl_);
+      } else {
+        publishSetpoint(plan_.entry_point_lat, plan_.entry_point_lon, hold_alt_amsl_);
+      }
+    }
+  }
+
+  // --- anggota ---
+  std::unique_ptr<MissionFsm> fsm_;
+
+  uint8_t dz_index_{0};
+  uint16_t dz_loiter_wp_index_{0};
+  double approach_timeout_{60.0};
+  double entry_reach_radius_{30.0};
+  std::string guided_mode_name_{"GUIDED"};
+  std::string auto_mode_name_{"AUTO"};
+
+  bool loiter_reached_{false};
+  bool plan_available_{false};
+  bool saw_released_{false};
+  bool have_veh_pos_{false};
+  bool entry_reached_{false};
+
+  interfaces::msg::AirdropPlan plan_;
+  double veh_lat_{0.0}, veh_lon_{0.0}, veh_alt_{0.0};
+  double hold_alt_amsl_{100.0};
+  rclcpp::Time approach_start_;
+
+  rclcpp::Subscription<mavros_msgs::msg::WaypointReached>::SharedPtr sub_reached_;
+  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_globalpos_;
+  rclcpp::Subscription<interfaces::msg::AirdropPlan>::SharedPtr sub_plan_;
+  rclcpp::Subscription<interfaces::msg::AirdropStatus>::SharedPtr sub_status_;
+  rclcpp::Publisher<interfaces::msg::DropAuthorization>::SharedPtr pub_auth_;
+  rclcpp::Publisher<geographic_msgs::msg::GeoPoseStamped>::SharedPtr pub_setpoint_;
+  rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr cli_set_mode_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+}  // namespace mission_bridge
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<mission_bridge::MissionBridgeNode>());
+  rclcpp::shutdown();
+  return 0;
+}

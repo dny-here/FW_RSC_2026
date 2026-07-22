@@ -1,0 +1,9 @@
+mission_bridge:
+  ros__parameters:
+    dz_index: 0
+    dz_loiter_wp_index: 0        # wp_seq item LOITER_TURNS DZ di mission Mission Planner
+    plan_wait_timeout: 20.0      # s: batas tunggu AirdropPlan setelah loiter -> gagal
+    approach_timeout: 60.0       # s: backstop bila RELEASED tak pernah terlihat
+    entry_reach_radius: 30.0     # m: dianggap sampai di entry point p
+    guided_mode_name: "GUIDED"
+    auto_mode_name: "AUTO"
