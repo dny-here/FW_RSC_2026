@@ -31,7 +31,7 @@ public:
   : Node("mission_bridge")
   {
     declare_parameter("dz_index", 0);
-    declare_parameter("dz_loiter_wp_index", 0);
+    declare_parameter("dz_loiter_wp_index", -1);
     declare_parameter("plan_wait_timeout", 20.0);
     declare_parameter("approach_timeout", 60.0);
     declare_parameter("entry_reach_radius", 30.0);
@@ -39,7 +39,7 @@ public:
     declare_parameter("auto_mode_name", std::string("AUTO"));
 
     dz_index_ = static_cast<uint8_t>(get_parameter("dz_index").as_int());
-    dz_loiter_wp_index_ = static_cast<uint16_t>(get_parameter("dz_loiter_wp_index").as_int());
+    dz_loiter_wp_index_ = static_cast<int>(get_parameter("dz_loiter_wp_index").as_int());
     approach_timeout_ = get_parameter("approach_timeout").as_double();
     entry_reach_radius_ = get_parameter("entry_reach_radius").as_double();
     guided_mode_name_ = get_parameter("guided_mode_name").as_string();
@@ -52,7 +52,7 @@ public:
     rclcpp::QoS latched(1); latched.transient_local();
 
     sub_reached_ = create_subscription<mavros_msgs::msg::WaypointReached>(
-      "mavros/mission/reached", sensor_qos,
+      "mavros/mission/reached", rclcpp::QoS(10),
       std::bind(&MissionBridgeNode::onReached, this, std::placeholders::_1));
     sub_globalpos_ = create_subscription<sensor_msgs::msg::NavSatFix>(
       "mavros/global_position/global", sensor_qos,
@@ -74,8 +74,14 @@ public:
     timer_ = create_wall_timer(100ms, std::bind(&MissionBridgeNode::update, this));
 
     RCLCPP_INFO(get_logger(),
-      "mission_bridge siap (DZ %u, loiter wp %u). Menunggu loiter selesai...",
+      "mission_bridge siap (DZ %u, loiter wp %d). Menunggu loiter selesai...",
       dz_index_, dz_loiter_wp_index_);
+
+    if (dz_loiter_wp_index_ < 0) {
+      RCLCPP_WARN(get_logger(),
+        "dz_loiter_wp_index TIDAK diset (sentinel -1) — GATE DROP NONAKTIF sampai "
+        "parameter ini diisi dengan wp_seq item LOITER_TURNS DZ!");
+    }
   }
 
 private:
@@ -83,7 +89,13 @@ private:
 
   void onReached(const mavros_msgs::msg::WaypointReached::SharedPtr msg)
   {
-    if (msg->wp_seq == dz_loiter_wp_index_) {
+    if (dz_loiter_wp_index_ < 0) {
+      RCLCPP_WARN_ONCE(get_logger(),
+        "mission/reached diterima tapi dz_loiter_wp_index belum diset (sentinel -1) — "
+        "event diabaikan, gate drop tetap nonaktif.");
+      return;
+    }
+    if (static_cast<int>(msg->wp_seq) == dz_loiter_wp_index_) {
       loiter_reached_ = true;
     }
   }
@@ -214,7 +226,7 @@ private:
   std::unique_ptr<MissionFsm> fsm_;
 
   uint8_t dz_index_{0};
-  uint16_t dz_loiter_wp_index_{0};
+  int dz_loiter_wp_index_{-1};
   double approach_timeout_{60.0};
   double entry_reach_radius_{30.0};
   std::string guided_mode_name_{"GUIDED"};
