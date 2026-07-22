@@ -1,0 +1,7 @@
+# DropPayload.srv
+# Request: airdrop_planning asks the drop-mechanism node to release one payload.
+uint8 bay_index      # dropping-mechanism bay to release (0/1)
+---
+# Response: acknowledgement from the relay / FCU.
+bool success         # true = release command accepted
+string message       # human-readable detail for logs / GCS

@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AirdropPlan.msg"
   "msg/AirdropStatus.msg"
   "srv/StartAirdrop.srv"
+  "srv/DropPayload.srv"
   "action/TargetAirdrop.action"
   DEPENDENCIES std_msgs geometry_msgs
 )
