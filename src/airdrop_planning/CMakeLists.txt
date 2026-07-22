@@ -7,9 +7,9 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(interfaces REQUIRED)
 
@@ -17,7 +17,7 @@ include_directories(include)
 
 add_executable(airdrop_planner_node src/airdrop_planner_node.cpp)
 ament_target_dependencies(airdrop_planner_node
-  rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs interfaces)
+  rclcpp rclcpp_action std_msgs sensor_msgs geometry_msgs interfaces)
 
 install(TARGETS airdrop_planner_node
   DESTINATION lib/${PROJECT_NAME})

@@ -1,28 +1,35 @@
 airdrop_planner:
   ros__parameters:
     ballistic:
-      mass_kg: 0.5          # payload KRTI: kayu 500 g
+      mass_kg: 0.5
       drag_coeff: 0.8       # !! GANTI hasil identifikasi drop test !!
       ref_area_m2: 0.01     # sesuaikan bentuk payload tim
       air_density: 1.225
       dt: 0.005
 
     approach:
-      release_alt_agl: 50.0     # paper memakai 50 m; sesuaikan aturan/NOTAM
+      release_alt_agl: 100.0    # KRTI: 100 m AGL; sesuaikan aturan/NOTAM
       release_airspeed: 18.0    # m/s, samakan dgn TRIM_ARSPD_CM ArduPilot
       distance: 300.0           # d — final approach; perbesar jika transien roll besar
       loiter_radius: 80.0
       min_wind_for_heading: 1.0
 
     release:
-      proximity_radius: 15.0      # release proximity circle
+      proximity_radius: 3.0       # release proximity circle
       mechanism_latency: 0.15     # s: servo + pintu bay terbuka
-      entry_capture_radius: 25.0
+      entry_capture_radius: 25.0  # cross-track maksimum saat melewati p
+      heading_tolerance: 0.35     # rad (~20 deg) alignment course vs approach
+      speed_reduction: 0.0        # m/s — paper: 2.0 bila motor DIMATIKAN sblm rilis
+      gps_latency: 0.1            # s — proyeksi posisi (paper Sec. 5.4)
+      drop_ack_timeout: 2.0       # s — tunggu ACK response DropPayload
 
     mission:
       num_payloads: 2
+      max_replans: 3              # missed target
+      num_bays: 2                 # jumlah bay (validasi bay_index goal)
 
     topics:
       global_position: "mavros/global_position/global"
-      odom: "mavros/local_position/odom"
+      velocity: "mavros/local_position/velocity_local"   # ENU, bukan odom.twist
       wind: "mavros/wind_estimation"
+      drop_service: "drop"        # service DropPayload ke node mekanisme drop / relay
