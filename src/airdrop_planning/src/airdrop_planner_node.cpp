@@ -459,6 +459,12 @@ private:
     m.fall_time = plan_->fall_time;
     m.impact_offset_north = plan_->offset_north;
     m.impact_offset_east = plan_->offset_east;
+    const GeoPoint rp_geo = frame_.toGeo(plan_->release_point);
+    const GeoPoint ep_geo = frame_.toGeo(plan_->entry_point);
+    m.release_point_lat = rp_geo.lat_deg;
+    m.release_point_lon = rp_geo.lon_deg;
+    m.entry_point_lat = ep_geo.lat_deg;
+    m.entry_point_lon = ep_geo.lon_deg;
     pub_plan_->publish(m);
   }
 

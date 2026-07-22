@@ -32,6 +32,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_ballistic_model test/test_ballistic_model.cpp)
   target_include_directories(test_ballistic_model PRIVATE include)
+  ament_add_gtest(test_geo_utils test/test_geo_utils.cpp)
+  target_include_directories(test_geo_utils PRIVATE include)
 endif()
 
 ament_package()

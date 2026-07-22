@@ -18,3 +18,10 @@ float64 release_altitude_agl # [m]
 float64 fall_time            # [s]  hasil simulasi balistik
 float64 impact_offset_north  # [m]  perpindahan balistik (x pada Algorithm 1)
 float64 impact_offset_east   # [m]  perpindahan balistik (y pada Algorithm 1)
+
+# Duplikat titik kunci dalam WGS-84 (deg) agar mission_bridge bisa
+# memerintah setpoint GUIDED global tanpa mengetahui datum lokal.
+float64 entry_point_lat
+float64 entry_point_lon
+float64 release_point_lat
+float64 release_point_lon
