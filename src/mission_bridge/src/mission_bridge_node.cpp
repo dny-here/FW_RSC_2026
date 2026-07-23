@@ -32,7 +32,9 @@ public:
   {
     declare_parameter("dz_index", 0);
     declare_parameter("dz_loiter_wp_index", -1);
-    declare_parameter("plan_wait_timeout", 20.0);
+    declare_parameter("survey_start_wp_index", -1);
+    declare_parameter("survey_end_wp_index", -1);
+    declare_parameter("plan_wait_timeout", 10.0);
     declare_parameter("approach_timeout", 60.0);
     declare_parameter("entry_reach_radius", 30.0);
     declare_parameter("guided_mode_name", std::string("GUIDED"));
@@ -40,13 +42,17 @@ public:
 
     dz_index_ = static_cast<uint8_t>(get_parameter("dz_index").as_int());
     dz_loiter_wp_index_ = static_cast<int>(get_parameter("dz_loiter_wp_index").as_int());
+    survey_start_wp_index_ = static_cast<int>(get_parameter("survey_start_wp_index").as_int());
+    survey_end_wp_index_ = static_cast<int>(get_parameter("survey_end_wp_index").as_int());
     approach_timeout_ = get_parameter("approach_timeout").as_double();
     entry_reach_radius_ = get_parameter("entry_reach_radius").as_double();
     guided_mode_name_ = get_parameter("guided_mode_name").as_string();
     auto_mode_name_ = get_parameter("auto_mode_name").as_string();
 
-    fsm_ = std::make_unique<MissionFsm>(
-      FsmConfig{get_parameter("plan_wait_timeout").as_double()});
+    FsmConfig cfg;
+    cfg.plan_wait_timeout_s = get_parameter("plan_wait_timeout").as_double();
+    cfg.survey_enabled = validateSurveyIndices();
+    fsm_ = std::make_unique<MissionFsm>(cfg);
 
     auto sensor_qos = rclcpp::SensorDataQoS();
     rclcpp::QoS latched(1); latched.transient_local();
@@ -87,6 +93,47 @@ public:
 private:
   using AirdropStatus = interfaces::msg::AirdropStatus;
 
+  // Syarat: 0 <= start <= end < loiter. Gagal syarat -> fase survey dimatikan
+  // (fallback perilaku lama), BUKAN crash dan BUKAN mematikan otorisasi drop.
+  bool validateSurveyIndices()
+  {
+    if (survey_start_wp_index_ < 0 && survey_end_wp_index_ < 0) {
+      RCLCPP_INFO(get_logger(),
+        "Fase survey NONAKTIF (survey_*_wp_index = -1) — otorisasi drop langsung "
+        "saat loiter selesai.");
+      return false;
+    }
+    if (survey_start_wp_index_ < 0 || survey_end_wp_index_ < 0 ||
+      survey_start_wp_index_ > survey_end_wp_index_ ||
+      dz_loiter_wp_index_ < 0 ||
+      survey_end_wp_index_ >= dz_loiter_wp_index_)
+    {
+      RCLCPP_ERROR(get_logger(),
+        "Indeks survey TIDAK VALID (start=%d, end=%d, loiter=%d) — syarat: "
+        "0 <= start <= end < loiter. Fase survey DINONAKTIFKAN.",
+        survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+      survey_start_wp_index_ = -1;
+      survey_end_wp_index_ = -1;
+      return false;
+    }
+    RCLCPP_INFO(get_logger(), "Fase survey AKTIF: wp %d..%d, loiter wp %d.",
+      survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+    return true;
+  }
+
+  static const char * phaseName(Phase p)
+  {
+    switch (p) {
+      case Phase::TRANSIT_TO_DZ:  return "TRANSIT_TO_DZ";
+      case Phase::SURVEY:         return "SURVEY";
+      case Phase::MONITOR_LOITER: return "MONITOR_LOITER";
+      case Phase::MONITOR_DONE:   return "MONITOR_DONE";
+      case Phase::DROP_APPROACH:  return "DROP_APPROACH";
+      case Phase::RESUME_AUTO:    return "RESUME_AUTO";
+    }
+    return "?";
+  }
+
   void onReached(const mavros_msgs::msg::WaypointReached::SharedPtr msg)
   {
     if (dz_loiter_wp_index_ < 0) {
@@ -95,7 +142,14 @@ private:
         "event diabaikan, gate drop tetap nonaktif.");
       return;
     }
-    if (static_cast<int>(msg->wp_seq) == dz_loiter_wp_index_) {
+    const int seq = static_cast<int>(msg->wp_seq);
+    if (survey_start_wp_index_ >= 0 && seq == survey_start_wp_index_) {
+      survey_start_reached_ = true;
+    }
+    if (survey_end_wp_index_ >= 0 && seq == survey_end_wp_index_) {
+      survey_end_reached_ = true;
+    }
+    if (seq == dz_loiter_wp_index_) {
       loiter_reached_ = true;
     }
   }
@@ -178,9 +232,25 @@ private:
     in.drop_finished = drop_finished;
     in.drop_success = drop_success;
     in.now_s = now().seconds();
+    in.survey_start_reached = survey_start_reached_;
+    in.survey_end_reached = survey_end_reached_;
 
     const Phase before = fsm_->phase();
     FsmOutput out = fsm_->step(in);
+
+    if (before != out.phase) {
+      RCLCPP_INFO(get_logger(), "Fase: %s -> %s",
+        phaseName(before), phaseName(out.phase));
+    }
+
+    if (out.order_violation) {
+      RCLCPP_ERROR(get_logger(),
+        "URUTAN MISSION SALAH: loiter wp %d tercapai saat fase masih %s — survey "
+        "wp %d..%d belum tuntas. Otorisasi TETAP diterbitkan. Periksa urutan item "
+        "mission dan nilai survey_*_wp_index / dz_loiter_wp_index.",
+        dz_loiter_wp_index_, phaseName(before),
+        survey_start_wp_index_, survey_end_wp_index_);
+    }
 
     if (out.authorize_now) {
       interfaces::msg::DropAuthorization a;
@@ -227,12 +297,16 @@ private:
 
   uint8_t dz_index_{0};
   int dz_loiter_wp_index_{-1};
+  int survey_start_wp_index_{-1};
+  int survey_end_wp_index_{-1};
   double approach_timeout_{60.0};
   double entry_reach_radius_{30.0};
   std::string guided_mode_name_{"GUIDED"};
   std::string auto_mode_name_{"AUTO"};
 
   bool loiter_reached_{false};
+  bool survey_start_reached_{false};
+  bool survey_end_reached_{false};
   bool plan_available_{false};
   bool saw_released_{false};
   bool have_veh_pos_{false};
