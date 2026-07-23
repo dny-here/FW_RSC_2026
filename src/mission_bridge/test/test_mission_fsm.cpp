@@ -72,3 +72,109 @@ TEST(MissionFsm, DropAbortResumesAutoWithFail)
   EXPECT_EQ(out.phase, Phase::RESUME_AUTO);
   EXPECT_TRUE(out.drop_failed);
 }
+
+// --- urutan survey-first ---
+
+static FsmInput survey_in(double t)
+{
+  FsmInput in{};
+  in.now_s = t;
+  return in;
+}
+
+static FsmConfig survey_cfg()
+{
+  FsmConfig cfg;
+  cfg.plan_wait_timeout_s = 10.0;
+  cfg.survey_enabled = true;
+  return cfg;
+}
+
+TEST(MissionFsmSurvey, FullSequenceTransitSurveyLoiterAuthorizes)
+{
+  MissionFsm fsm(survey_cfg());
+  EXPECT_EQ(fsm.phase(), Phase::TRANSIT_TO_DZ);
+
+  FsmInput a = survey_in(1.0); a.survey_start_reached = true;
+  EXPECT_EQ(fsm.step(a).phase, Phase::SURVEY);
+
+  FsmInput b = survey_in(2.0);
+  b.survey_start_reached = true; b.survey_end_reached = true;
+  EXPECT_EQ(fsm.step(b).phase, Phase::MONITOR_LOITER);
+
+  // loiter belum selesai -> belum boleh otorisasi
+  FsmOutput hold = fsm.step(b);
+  EXPECT_EQ(hold.phase, Phase::MONITOR_LOITER);
+  EXPECT_FALSE(hold.authorize_now);
+
+  FsmInput c = survey_in(3.0);
+  c.survey_start_reached = true; c.survey_end_reached = true; c.loiter_reached = true;
+  FsmOutput out = fsm.step(c);
+  EXPECT_EQ(out.phase, Phase::MONITOR_DONE);
+  EXPECT_TRUE(out.authorize_now);
+  EXPECT_FALSE(out.order_violation);
+}
+
+TEST(MissionFsmSurvey, DisabledSurveyKeepsLegacyBehaviour)
+{
+  FsmConfig cfg;
+  cfg.plan_wait_timeout_s = 10.0;
+  cfg.survey_enabled = false;
+  MissionFsm fsm(cfg);
+
+  FsmInput a = survey_in(1.0); a.loiter_reached = true;
+  FsmOutput out = fsm.step(a);
+  EXPECT_EQ(out.phase, Phase::MONITOR_DONE);
+  EXPECT_TRUE(out.authorize_now);
+  EXPECT_FALSE(out.order_violation);
+}
+
+TEST(MissionFsmSurvey, LoiterDuringTransitStillAuthorizesButFlagsOrder)
+{
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.loiter_reached = true;
+  FsmOutput out = fsm.step(a);
+  EXPECT_EQ(out.phase, Phase::MONITOR_DONE);
+  EXPECT_TRUE(out.authorize_now);
+  EXPECT_TRUE(out.order_violation);
+}
+
+TEST(MissionFsmSurvey, LoiterDuringSurveyStillAuthorizesButFlagsOrder)
+{
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.survey_start_reached = true;
+  ASSERT_EQ(fsm.step(a).phase, Phase::SURVEY);
+
+  FsmInput b = survey_in(2.0);
+  b.survey_start_reached = true; b.loiter_reached = true;
+  FsmOutput out = fsm.step(b);
+  EXPECT_EQ(out.phase, Phase::MONITOR_DONE);
+  EXPECT_TRUE(out.authorize_now);
+  EXPECT_TRUE(out.order_violation);
+}
+
+TEST(MissionFsmSurvey, SurveyEndWithoutStartSkipsToMonitorLoiter)
+{
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.survey_end_reached = true;
+  FsmOutput out = fsm.step(a);
+  EXPECT_EQ(out.phase, Phase::MONITOR_LOITER);
+  EXPECT_FALSE(out.authorize_now);
+  EXPECT_FALSE(out.order_violation);
+}
+
+TEST(MissionFsmSurvey, OrderViolationIsPulseNotLevel)
+{
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.loiter_reached = true;
+  ASSERT_TRUE(fsm.step(a).order_violation);
+
+  FsmInput b = survey_in(1.1); b.loiter_reached = true;
+  FsmOutput out = fsm.step(b);
+  EXPECT_FALSE(out.order_violation);
+  EXPECT_FALSE(out.authorize_now);
+}
