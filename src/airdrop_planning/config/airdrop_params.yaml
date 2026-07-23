@@ -15,7 +15,13 @@ airdrop_planner:
       min_wind_for_heading: 1.0
 
     release:
-      proximity_radius: 3.0       # release proximity circle
+      # release proximity circle. JANGAN turunkan ke orde meter: trigger_radius
+      # efektif = max(proximity_radius, ground_speed * mechanism_latency) ~ 3 m
+      # pada 20 m/s, jadi nilai 3.0 membuat drop hanya terpicu bila wahana lewat
+      # dalam 3 m dari release point — cross-track beberapa meter saja sudah
+      # berarti MISSED + replan berulang, bukan drop yang meleset sedikit.
+      # prec_drop sendiri mencatat release point error di orde 10 m (Tabel 3).
+      proximity_radius: 12.0
       mechanism_latency: 0.15     # s: servo + pintu bay terbuka
       entry_capture_radius: 25.0  # cross-track maksimum saat melewati p
       heading_tolerance: 0.35     # rad (~20 deg) alignment course vs approach
