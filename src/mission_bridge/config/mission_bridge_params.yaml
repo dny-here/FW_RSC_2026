@@ -1,11 +1,20 @@
 mission_bridge:
   ros__parameters:
     dz_index: 0
+    # WAJIB DIISI: wp_seq item pertama & terakhir grid lawnmower DZ.
+    # -1 pada keduanya = fase survey NONAKTIF (perilaku lama: otorisasi drop
+    # langsung saat loiter selesai). Syarat: 0 <= start <= end < loiter.
+    survey_start_wp_index: 3
+    survey_end_wp_index: 14
     # WAJIB DIISI: wp_seq item LOITER_TURNS DZ di mission Mission Planner.
-    # -1 = sentinel "belum dikonfigurasi" -> gate otorisasi drop NONAKTIF (aman secara
-    # default, tapi drop TIDAK PERNAH akan diotorisasi sampai nilai ini diisi).
-    dz_loiter_wp_index: -1
-    plan_wait_timeout: 20.0      # s: batas tunggu AirdropPlan setelah loiter -> gagal
+    # -1 = sentinel "belum dikonfigurasi" -> gate otorisasi drop NONAKTIF (aman
+    # secara default, tapi drop TIDAK PERNAH akan diotorisasi sampai diisi).
+    dz_loiter_wp_index: 15
+    # Turun dari 20.0: setelah LOITER_TURNS selesai ArduPilot langsung lanjut ke
+    # item berikutnya, jadi wahana MENJAUH dari DZ selama menunggu plan (20 m/s
+    # x 10 s = 200 m). Target sudah LOCKED sejak fase survey, jadi plan mestinya
+    # tiba < 1 s setelah otorisasi.
+    plan_wait_timeout: 10.0
     approach_timeout: 60.0       # s: backstop bila RELEASED tak pernah terlihat
     entry_reach_radius: 30.0     # m: dianggap sampai di entry point p
     guided_mode_name: "GUIDED"
