@@ -76,6 +76,15 @@ public:
           enterMonitorDone(in, out);
         } else if (cfg_.survey_enabled && in.survey_end_reached) {
           // Misi di-resume di tengah grid: lompat langsung, jangan mandek.
+          //
+          // survey_end_reached SENGAJA dicek sebelum survey_start_reached (bukan
+          // sebaliknya) supaya resume-di-tengah-grid di atas berfungsi. Konsekuensi:
+          // bila konfigurasi punya survey_start_wp_index == survey_end_wp_index
+          // (diizinkan oleh validateSurveyIndices(), syaratnya start <= end, bukan
+          // <), satu event mission/reached men-set survey_start_reached DAN
+          // survey_end_reached pada tick yang sama, cabang ini menang duluan, dan
+          // FSM lompat langsung ke MONITOR_LOITER — fase SURVEY tidak pernah
+          // muncul di log/phase. Untuk grid survei sungguhan pakai start < end.
           phase_ = Phase::MONITOR_LOITER;
         } else if (cfg_.survey_enabled && in.survey_start_reached) {
           phase_ = Phase::SURVEY;

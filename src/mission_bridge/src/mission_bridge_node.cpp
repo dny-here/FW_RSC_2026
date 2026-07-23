@@ -79,9 +79,20 @@ public:
 
     timer_ = create_wall_timer(100ms, std::bind(&MissionBridgeNode::update, this));
 
-    RCLCPP_INFO(get_logger(),
-      "mission_bridge siap (DZ %u, loiter wp %d). Menunggu loiter selesai...",
-      dz_index_, dz_loiter_wp_index_);
+    // Baris kesiapan dicetak sebelum log "Fase survey AKTIF/NONAKTIF" (yang
+    // ditulis dari validateSurveyIndices() di atas) supaya urutan log tidak
+    // terbalik, dan mencerminkan fase yang sebenarnya sedang ditunggu.
+    if (cfg.survey_enabled) {
+      RCLCPP_INFO(get_logger(),
+        "mission_bridge siap (DZ %u, survey wp %d..%d, loiter wp %d). Menunggu survey mulai...",
+        dz_index_, survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+    } else {
+      RCLCPP_INFO(get_logger(),
+        "mission_bridge siap (DZ %u, loiter wp %d). Menunggu loiter selesai...",
+        dz_index_, dz_loiter_wp_index_);
+    }
+
+    logSurveyValidation();
 
     if (dz_loiter_wp_index_ < 0) {
       RCLCPP_WARN(get_logger(),
@@ -93,14 +104,24 @@ public:
 private:
   using AirdropStatus = interfaces::msg::AirdropStatus;
 
+  enum class SurveyDiagLevel { kDisabled, kInvalid, kEnabled };
+
   // Syarat: 0 <= start <= end < loiter. Gagal syarat -> fase survey dimatikan
   // (fallback perilaku lama), BUKAN crash dan BUKAN mematikan otorisasi drop.
+  //
+  // CATATAN: fungsi ini MEVALIDASI *dan* MENSANITASI — pada kegagalan syarat ia
+  // menge-nol-kan (sentinel -1) survey_start_wp_index_/survey_end_wp_index_,
+  // bukan cuma melaporkan error. Ini disengaja: onReached() memakai kedua
+  // anggota ini langsung, jadi men-sanitasi di sini mengeraskan onReached()
+  // terhadap indeks yang setengah-valid tanpa perlu cek ulang di sana.
+  //
+  // Pencatatan log hasil validasi SENGAJA ditunda (lihat logSurveyValidation()
+  // dan pemanggilnya di konstruktor) agar baris "mission_bridge siap" tetap
+  // tercetak duluan, bukan setelah baris "Fase survey AKTIF/NONAKTIF".
   bool validateSurveyIndices()
   {
     if (survey_start_wp_index_ < 0 && survey_end_wp_index_ < 0) {
-      RCLCPP_INFO(get_logger(),
-        "Fase survey NONAKTIF (survey_*_wp_index = -1) — otorisasi drop langsung "
-        "saat loiter selesai.");
+      survey_diag_level_ = SurveyDiagLevel::kDisabled;
       return false;
     }
     if (survey_start_wp_index_ < 0 || survey_end_wp_index_ < 0 ||
@@ -108,17 +129,42 @@ private:
       dz_loiter_wp_index_ < 0 ||
       survey_end_wp_index_ >= dz_loiter_wp_index_)
     {
-      RCLCPP_ERROR(get_logger(),
-        "Indeks survey TIDAK VALID (start=%d, end=%d, loiter=%d) — syarat: "
-        "0 <= start <= end < loiter. Fase survey DINONAKTIFKAN.",
-        survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+      survey_diag_level_ = SurveyDiagLevel::kInvalid;
+      // Simpan nilai mentah (sebelum disanitasi) untuk pesan error di bawah.
+      survey_diag_start_ = survey_start_wp_index_;
+      survey_diag_end_ = survey_end_wp_index_;
       survey_start_wp_index_ = -1;
       survey_end_wp_index_ = -1;
       return false;
     }
-    RCLCPP_INFO(get_logger(), "Fase survey AKTIF: wp %d..%d, loiter wp %d.",
-      survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+    survey_diag_level_ = SurveyDiagLevel::kEnabled;
     return true;
+  }
+
+  // Mencetak hasil validateSurveyIndices(). Dipanggil dari konstruktor SETELAH
+  // baris kesiapan "mission_bridge siap" — lihat catatan di validateSurveyIndices().
+  void logSurveyValidation()
+  {
+    switch (survey_diag_level_) {
+      case SurveyDiagLevel::kDisabled:
+        // Cetak nilai aktual (bukan literal "-1" hardcoded) — cabang ini
+        // dieksekusi untuk pasangan negatif apa pun, tidak hanya -1 persis.
+        RCLCPP_INFO(get_logger(),
+          "Fase survey NONAKTIF (survey_start_wp_index=%d, survey_end_wp_index=%d) — "
+          "otorisasi drop langsung saat loiter selesai.",
+          survey_start_wp_index_, survey_end_wp_index_);
+        break;
+      case SurveyDiagLevel::kInvalid:
+        RCLCPP_ERROR(get_logger(),
+          "Indeks survey TIDAK VALID (start=%d, end=%d, loiter=%d) — syarat: "
+          "0 <= start <= end < loiter. Fase survey DINONAKTIFKAN.",
+          survey_diag_start_, survey_diag_end_, dz_loiter_wp_index_);
+        break;
+      case SurveyDiagLevel::kEnabled:
+        RCLCPP_INFO(get_logger(), "Fase survey AKTIF: wp %d..%d, loiter wp %d.",
+          survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
+        break;
+    }
   }
 
   static const char * phaseName(Phase p)
@@ -143,6 +189,14 @@ private:
       return;
     }
     const int seq = static_cast<int>(msg->wp_seq);
+    // Selalu dicetak (bukan hanya saat cocok) — ini satu-satunya cara operator
+    // melihat, dari log, bahwa mission yang di-load tidak cocok dengan
+    // survey_*_wp_index/dz_loiter_wp_index (mis. mission file lama termuat
+    // sementara param mengacu ke mission baru): tanpa baris ini, wp_seq yang
+    // tidak pernah match hanya membuat FSM diam di satu fase tanpa jejak.
+    RCLCPP_INFO(get_logger(),
+      "mission/reached wp_seq=%d (survey %d..%d, loiter %d)",
+      seq, survey_start_wp_index_, survey_end_wp_index_, dz_loiter_wp_index_);
     if (survey_start_wp_index_ >= 0 && seq == survey_start_wp_index_) {
       survey_start_reached_ = true;
     }
@@ -247,7 +301,10 @@ private:
       RCLCPP_ERROR(get_logger(),
         "URUTAN MISSION SALAH: loiter wp %d tercapai saat fase masih %s — survey "
         "wp %d..%d belum tuntas. Otorisasi TETAP diterbitkan. Periksa urutan item "
-        "mission dan nilai survey_*_wp_index / dz_loiter_wp_index.",
+        "mission dan nilai survey_*_wp_index / dz_loiter_wp_index, ATAU event "
+        "mission/reached untuk survey_end tidak diterima (node restart / pesan "
+        "hilang — mission/reached bersifat one-shot & tidak di-latch, jadi mission "
+        "bisa saja sudah benar).",
         dz_loiter_wp_index_, phaseName(before),
         survey_start_wp_index_, survey_end_wp_index_);
     }
@@ -304,6 +361,18 @@ private:
   std::string guided_mode_name_{"GUIDED"};
   std::string auto_mode_name_{"AUTO"};
 
+  // Hasil validateSurveyIndices(), dicetak belakangan oleh logSurveyValidation()
+  // — lihat catatan pada validateSurveyIndices(). survey_diag_start_/end_ hanya
+  // dipakai untuk pesan kInvalid (menyimpan nilai sebelum disanitasi ke -1).
+  SurveyDiagLevel survey_diag_level_{SurveyDiagLevel::kDisabled};
+  int survey_diag_start_{-1};
+  int survey_diag_end_{-1};
+
+  // Semua flag "reached"/"available"/"seen" di bawah adalah latch one-shot:
+  // sekali true, tidak pernah direset. Untuk DZ tunggal itu benar (proses
+  // linear TRANSIT->...->RESUME_AUTO). Implementasi multi-DZ di masa depan
+  // WAJIB mereset flag-flag ini (dan dz_index_) saat pindah ke DZ berikutnya,
+  // atau state DZ sebelumnya akan bocor ke DZ baru.
   bool loiter_reached_{false};
   bool survey_start_reached_{false};
   bool survey_end_reached_{false};

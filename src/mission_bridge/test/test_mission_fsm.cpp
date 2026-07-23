@@ -178,3 +178,72 @@ TEST(MissionFsmSurvey, OrderViolationIsPulseNotLevel)
   EXPECT_FALSE(out.order_violation);
   EXPECT_FALSE(out.authorize_now);
 }
+
+// --- invarian keselamatan (Fix 6, review whole-branch) ---
+
+TEST(MissionFsmSafety, ModeCmdStaysNoneThroughSurveyAndMonitorLoiter)
+{
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.survey_start_reached = true;
+  FsmOutput out_survey = fsm.step(a);
+  ASSERT_EQ(out_survey.phase, Phase::SURVEY);
+  EXPECT_EQ(out_survey.mode_cmd, ModeCmd::NONE);
+
+  FsmInput b = survey_in(2.0);
+  b.survey_start_reached = true; b.survey_end_reached = true;
+  FsmOutput out_loiter = fsm.step(b);
+  ASSERT_EQ(out_loiter.phase, Phase::MONITOR_LOITER);
+  EXPECT_EQ(out_loiter.mode_cmd, ModeCmd::NONE);
+
+  // beberapa tick lagi menunggu loiter, mode_cmd tetap NONE
+  FsmOutput out_hold = fsm.step(b);
+  EXPECT_EQ(out_hold.phase, Phase::MONITOR_LOITER);
+  EXPECT_EQ(out_hold.mode_cmd, ModeCmd::NONE);
+}
+
+TEST(MissionFsmSafety, MonitorLoiterNeverTimesOutOrAuthorizes)
+{
+  // Paling kritis: bila MONITOR_LOITER pernah timeout, drop bisa terotorisasi
+  // TANPA loiter pernah diterbangkan sama sekali.
+  MissionFsm fsm(survey_cfg());
+
+  FsmInput a = survey_in(1.0); a.survey_start_reached = true;
+  ASSERT_EQ(fsm.step(a).phase, Phase::SURVEY);
+
+  FsmInput b = survey_in(2.0);
+  b.survey_start_reached = true; b.survey_end_reached = true;
+  ASSERT_EQ(fsm.step(b).phase, Phase::MONITOR_LOITER);
+
+  // now_s maju jauh melewati 10x plan_wait_timeout_s (10.0 pada survey_cfg()),
+  // loiter_reached tetap false.
+  FsmInput c = survey_in(2.0 + 10.0 * survey_cfg().plan_wait_timeout_s);
+  c.survey_start_reached = true; c.survey_end_reached = true;
+  FsmOutput out = fsm.step(c);
+
+  EXPECT_EQ(out.phase, Phase::MONITOR_LOITER);
+  EXPECT_FALSE(out.authorize_now);
+  EXPECT_FALSE(out.drop_failed);
+  EXPECT_EQ(out.mode_cmd, ModeCmd::NONE);
+}
+
+TEST(MissionFsmSafety, SurveyDisabledIgnoresSurveyReachedInputs)
+{
+  FsmConfig cfg;
+  cfg.plan_wait_timeout_s = 10.0;
+  cfg.survey_enabled = false;
+  MissionFsm fsm(cfg);
+
+  FsmInput a = survey_in(1.0);
+  a.survey_start_reached = true; a.survey_end_reached = true;
+  FsmOutput out = fsm.step(a);
+
+  EXPECT_EQ(out.phase, Phase::TRANSIT_TO_DZ);
+  EXPECT_FALSE(out.authorize_now);
+}
+
+TEST(MissionFsmConfig, PlanWaitTimeoutDefaultIsTenSeconds)
+{
+  FsmConfig cfg;
+  EXPECT_DOUBLE_EQ(cfg.plan_wait_timeout_s, 10.0);
+}

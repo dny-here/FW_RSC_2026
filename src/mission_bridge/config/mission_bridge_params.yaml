@@ -4,6 +4,16 @@ mission_bridge:
     # WAJIB DIISI: wp_seq item pertama & terakhir grid lawnmower DZ.
     # -1 pada keduanya = fase survey NONAKTIF (perilaku lama: otorisasi drop
     # langsung saat loiter selesai). Syarat: 0 <= start <= end < loiter.
+    # (start == end diterima secara sintaksis tapi menghilangkan fase SURVEY dari
+    # FSM/log dalam satu tick — lihat komentar cabang survey_end di
+    # mission_fsm.hpp TRANSIT_TO_DZ. Grid survei sungguhan butuh start < end.)
+    #
+    # Indeks di bawah ini (3 / 14 / 15) dihitung untuk missions/dz1_survey.waypoints
+    # SPESIFIK — bukan missions/dz1_test.waypoints atau mission lain. Bila mission
+    # yang di-load berbeda, indeks-indeks ini HARUS dihitung ulang dari mission
+    # file yang sebenarnya diterbangkan, jika tidak FSM bisa parkir diam-diam di
+    # fase SURVEY (lihat log mission/reached wp_seq per event di mission_bridge_node
+    # untuk mendeteksi mismatch ini).
     survey_start_wp_index: 3
     survey_end_wp_index: 14
     # WAJIB DIISI: wp_seq item LOITER_TURNS DZ di mission Mission Planner.
