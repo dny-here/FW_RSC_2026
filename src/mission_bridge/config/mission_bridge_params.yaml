@@ -25,7 +25,18 @@ mission_bridge:
     # x 10 s = 200 m). Target sudah LOCKED sejak fase survey, jadi plan mestinya
     # tiba < 1 s setelah otorisasi.
     plan_wait_timeout: 10.0
-    approach_timeout: 60.0       # s: backstop bila RELEASED tak pernah terlihat
-    entry_reach_radius: 30.0     # m: dianggap sampai di entry point p
+    # s: backstop bila RELEASED tak pernah terlihat. Dinaikkan dari 60.0 karena
+    # jalur approach kini mengikuti paper sepenuhnya dan memang lebih panjang:
+    # transit ke s (~380 m @20 m/s ~ 19 s) + hingga SATU putaran penuh orbit
+    # sampai menyinggung p (2*pi*80/20 ~ 25 s) + segmen lurus p->release
+    # (300/20 = 15 s) ~ 60 s pada kasus terburuk, belum termasuk transien
+    # capture orbit ArduPlane. Nilai 60.0 akan menyerah tepat di ambang.
+    approach_timeout: 120.0
+    # m: seberapa jauh DI LUAR release point titik tujuan GUIDED ditaruh selama
+    # final approach, sepanjang approach_heading. Tujuan tepat di release point
+    # membuat ArduPlane membelok masuk orbit sebelum melewatinya (cross-track
+    # velocity saat rilis != 0, prec_drop Sec. 2.4). Patokan: >= 2x WP_LOITER_RAD
+    # supaya capture orbit terjadi jauh setelah release point dilewati.
+    overshoot_distance: 250.0
     guided_mode_name: "GUIDED"
     auto_mode_name: "AUTO"

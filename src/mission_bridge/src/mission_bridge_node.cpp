@@ -1,16 +1,29 @@
 // mission_bridge_node.cpp
 // Konduktor fase-misi DZ (Opsi C hybrid). Menerjemahkan output MissionFsm
-// menjadi aksi MAVROS: otorisasi drop, switch GUIDED/AUTO, dan streaming
-// setpoint global menuju entry -> release (L1/TECS ArduPilot yang terbang).
+// menjadi aksi MAVROS: otorisasi drop, switch GUIDED/AUTO, dan perintah
+// tujuan GUIDED menuju loiter center -> overshoot (L1/TECS ArduPilot yang terbang).
+//
+// PENTING — kenapa DO_REPOSITION dan bukan setpoint_position/global:
+// ArduPlane MEMBUANG lat/lon pada SET_POSITION_TARGET_GLOBAL_INT (pesan yang
+// dikirim mavros/setpoint_position/global). Lihat ArduPlane/GCS_MAVLink_Plane.cpp
+// handle_set_position_target_global_int(): ia hanya memanggil
+// handle_change_alt_request() dengan lat=0,lng=0 — posisi tidak pernah diproses.
+// Akibatnya wahana mengorbit titik tempat GUIDED diaktifkan, entry point p tak
+// pernah dilewati, dan planner parkir selamanya di STATE_LOITER (terverifikasi
+// dari dataflash: 111 s di GUIDED, NTUN.TLat/TLng hanya berisi SATU nilai).
+// MAV_CMD_DO_REPOSITION (COMMAND_INT) adalah satu-satunya jalur yang benar-benar
+// memanggil plane.set_guided_WP().
 #include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
-#include "geographic_msgs/msg/geo_pose_stamped.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "mavros_msgs/msg/waypoint_reached.hpp"
+#include "mavros_msgs/srv/command_int.hpp"
 #include "mavros_msgs/srv/set_mode.hpp"
 
 #include "interfaces/msg/airdrop_plan.hpp"
@@ -36,7 +49,7 @@ public:
     declare_parameter("survey_end_wp_index", -1);
     declare_parameter("plan_wait_timeout", 10.0);
     declare_parameter("approach_timeout", 60.0);
-    declare_parameter("entry_reach_radius", 30.0);
+    declare_parameter("overshoot_distance", 250.0);
     declare_parameter("guided_mode_name", std::string("GUIDED"));
     declare_parameter("auto_mode_name", std::string("AUTO"));
 
@@ -45,7 +58,7 @@ public:
     survey_start_wp_index_ = static_cast<int>(get_parameter("survey_start_wp_index").as_int());
     survey_end_wp_index_ = static_cast<int>(get_parameter("survey_end_wp_index").as_int());
     approach_timeout_ = get_parameter("approach_timeout").as_double();
-    entry_reach_radius_ = get_parameter("entry_reach_radius").as_double();
+    overshoot_distance_ = get_parameter("overshoot_distance").as_double();
     guided_mode_name_ = get_parameter("guided_mode_name").as_string();
     auto_mode_name_ = get_parameter("auto_mode_name").as_string();
 
@@ -63,6 +76,16 @@ public:
     sub_globalpos_ = create_subscription<sensor_msgs::msg::NavSatFix>(
       "mavros/global_position/global", sensor_qos,
       std::bind(&MissionBridgeNode::onGlobalPos, this, std::placeholders::_1));
+    // Ketinggian RELATIF terhadap home — bukan altitude NavSatFix, yang bernilai
+    // tinggi ELIPSOID WGS-84. Mengirim tinggi elipsoid sebagai AMSL menaikkan
+    // perintah sebesar separasi geoid (terukur ~19 m di SITL Canberra: wahana
+    // memanjat 100 -> 119 m). Frame relative-alt tidak punya ambiguitas itu.
+    sub_rel_alt_ = create_subscription<std_msgs::msg::Float64>(
+      "mavros/global_position/rel_alt", sensor_qos,
+      [this](const std_msgs::msg::Float64::SharedPtr m) {
+        rel_alt_m_ = m->data;
+        have_rel_alt_ = true;
+      });
     sub_plan_ = create_subscription<interfaces::msg::AirdropPlan>(
       "airdrop/plan", 10,
       std::bind(&MissionBridgeNode::onPlan, this, std::placeholders::_1));
@@ -72,10 +95,17 @@ public:
 
     pub_auth_ = create_publisher<interfaces::msg::DropAuthorization>(
       "mission/drop_authorized", latched);
-    pub_setpoint_ = create_publisher<geographic_msgs::msg::GeoPoseStamped>(
-      "mavros/setpoint_position/global", 10);
-
     cli_set_mode_ = create_client<mavros_msgs::srv::SetMode>("mavros/set_mode");
+    cli_reposition_ = create_client<mavros_msgs::srv::CommandInt>("mavros/cmd/command_int");
+
+    // WAJIB: rclcpp::Time yang dibiarkan default memakai RCL_SYSTEM_TIME (2),
+    // sedangkan now() memakai RCL_ROS_TIME (1). Mengurangkan keduanya MELEMPAR
+    // std::runtime_error "can't subtract times with different time sources",
+    // exception itu keluar dari timer callback dan mematikan node tanpa jejak
+    // (file log tersisa 0 byte karena buffer tak sempat di-flush). Menginisialisasi
+    // di sini menyamakan clock source keduanya sejak awal.
+    approach_start_ = now();
+    repos_last_attempt_ = now();
 
     timer_ = create_wall_timer(100ms, std::bind(&MissionBridgeNode::update, this));
 
@@ -220,37 +250,117 @@ private:
   {
     plan_ = *msg;
     plan_available_ = true;
+
+    // Radius orbit dikirim EKSPLISIT pada param3 DO_REPOSITION, jadi geometri
+    // titik singgung p tidak lagi bergantung pada WP_LOITER_RAD FCU kebetulan
+    // bernilai sama dengan approach.loiter_radius planner. WP_LOITER_RAD tetap
+    // berlaku untuk loiter mission biasa, tapi bukan lagi kopling senyap di
+    // jalur drop.
+    RCLCPP_INFO_ONCE(get_logger(),
+      "Plan diterima: orbit approach akan diperintahkan r=%.0f m searah jarum jam.",
+      msg->loiter_radius);
   }
 
   void onStatus(const AirdropStatus::SharedPtr msg)
   {
+    // Sumber kebenaran tunggal untuk "sudah sampai di p": planner. Bridge tidak
+    // lagi menghitung sendiri jarak ke entry point — uji jarak murni bisa trip
+    // di setiap putaran orbit (p berada DI orbit) sementara syarat course-nya
+    // belum terpenuhi, memutus orbit sebelum planner sempat capture.
+    planner_state_ = msg->state;
     if (msg->state == AirdropStatus::STATE_RELEASED) {
       saw_released_ = true;
     }
   }
 
-  // haversine [m]
-  static double distMeters(double lat1, double lon1, double lat2, double lon2)
+  // Geser (lat,lon) sejauh d meter pada heading psi [rad, dari North, CW positif].
+  // Equirectangular — konsisten dengan geo_utils planner, memadai untuk d << R.
+  static std::pair<double, double> offsetLatLon(
+    double lat, double lon, double heading, double d)
   {
     constexpr double R = 6378137.0;
-    const double dlat = (lat2 - lat1) * M_PI / 180.0;
-    const double dlon = (lon2 - lon1) * M_PI / 180.0;
-    const double a = std::sin(dlat / 2) * std::sin(dlat / 2) +
-      std::cos(lat1 * M_PI / 180.0) * std::cos(lat2 * M_PI / 180.0) *
-      std::sin(dlon / 2) * std::sin(dlon / 2);
-    return 2.0 * R * std::asin(std::min(1.0, std::sqrt(a)));
+    constexpr double kRad2Deg = 180.0 / M_PI;
+    const double dn = d * std::cos(heading);
+    const double de = d * std::sin(heading);
+    const double coslat = std::cos(lat * M_PI / 180.0);
+    return {
+      lat + (dn / R) * kRad2Deg,
+      lon + (de / (R * (std::abs(coslat) < 1e-9 ? 1e-9 : coslat))) * kRad2Deg};
   }
 
-  void publishSetpoint(double lat, double lon, double alt)
+  // Perintahkan tujuan GUIDED via MAV_CMD_DO_REPOSITION (COMMAND_INT).
+  //
+  // Ini PERINTAH, bukan stream: dikirim sekali per perubahan tujuan, lalu
+  // di-retry hanya bila FCU tidak mengiyakan. Menembakkannya 10 Hz akan
+  // membanjiri link dan me-reset guided WP tiap tick.
+  //
+  // param3 = radius loiter dan param4 = 0 -> loiter_ccw = 0 (SEARAH JARUM JAM,
+  // lihat handle_command_int_do_reposition). Dengan radius dikirim eksplisit
+  // dari plan_.loiter_radius, geometri titik singgung p tidak lagi bergantung
+  // pada WP_LOITER_RAD FCU kebetulan bernilai sama — konsisten by construction.
+  //
+  // param2 = MAV_DO_REPOSITION_FLAGS_CHANGE_MODE: ArduPlane sendiri yang masuk
+  // GUIDED, sehingga tidak ada balapan antara set_mode dan perintah ini.
+  void sendReposition(double lat, double lon, double alt_rel, double radius)
   {
-    geographic_msgs::msg::GeoPoseStamped sp;
-    sp.header.stamp = now();
-    sp.header.frame_id = "map";
-    sp.pose.position.latitude = lat;
-    sp.pose.position.longitude = lon;
-    sp.pose.position.altitude = alt;
-    sp.pose.orientation.w = 1.0;
-    pub_setpoint_->publish(sp);
+    if (!cli_reposition_->service_is_ready()) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Service %s belum siap — tujuan GUIDED tidak bisa diperintahkan.",
+        cli_reposition_->get_service_name());
+      return;
+    }
+    auto req = std::make_shared<mavros_msgs::srv::CommandInt::Request>();
+    req->broadcast = false;
+    req->frame = 6;    // MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+    req->command = 192;  // MAV_CMD_DO_REPOSITION
+    req->current = 0;
+    req->autocontinue = 0;
+    req->param1 = 0.0f;   // ground speed: 0 = pakai default kendaraan
+    req->param2 = 1.0f;   // MAV_DO_REPOSITION_FLAGS_CHANGE_MODE
+    req->param3 = static_cast<float>(radius);
+    req->param4 = 0.0f;   // yaw 0/NaN -> clockwise
+    req->x = static_cast<int32_t>(std::lround(lat * 1e7));
+    req->y = static_cast<int32_t>(std::lround(lon * 1e7));
+    req->z = static_cast<float>(alt_rel);
+
+    repos_sent_lat_ = lat;
+    repos_sent_lon_ = lon;
+    repos_have_sent_ = true;
+    repos_ack_ok_ = false;
+    repos_last_attempt_ = now();
+
+    cli_reposition_->async_send_request(req,
+      [this, lat, lon, radius](
+        rclcpp::Client<mavros_msgs::srv::CommandInt>::SharedFuture fut) {
+        const bool ok = fut.get()->success;
+        repos_ack_ok_ = ok;
+        if (ok) {
+          RCLCPP_INFO(get_logger(),
+            "DO_REPOSITION diterima: (%.7f, %.7f) r=%.0f m CW", lat, lon, radius);
+        } else {
+          RCLCPP_ERROR(get_logger(),
+            "DO_REPOSITION DITOLAK FCU untuk (%.7f, %.7f) — akan di-retry. "
+            "Penyebab lazim: bukan mode GUIDED, atau tujuan di luar geofence.",
+            lat, lon);
+        }
+      });
+  }
+
+  // Kirim ulang hanya bila tujuan berubah (mis. planner replan, atau pindah ke
+  // titik overshoot) atau bila FCU belum mengiyakan yang terakhir.
+  void commandTarget(double lat, double lon, double alt_rel, double radius)
+  {
+    constexpr double kSameTargetDeg = 1e-6;   // ~0,11 m
+    const bool moved = !repos_have_sent_ ||
+      std::abs(lat - repos_sent_lat_) > kSameTargetDeg ||
+      std::abs(lon - repos_sent_lon_) > kSameTargetDeg;
+    // repos_have_sent_ mendahului sengaja: sebelum perintah pertama terkirim,
+    // repos_last_attempt_ tidak bermakna dan tidak boleh ikut dievaluasi.
+    const bool retry_due = repos_have_sent_ && !repos_ack_ok_ &&
+      (now() - repos_last_attempt_).seconds() > 1.0;
+    if (moved || retry_due) {
+      sendReposition(lat, lon, alt_rel, radius);
+    }
   }
 
   void setMode(const std::string & mode)
@@ -269,7 +379,25 @@ private:
       });
   }
 
+  // Pembungkus timer. Exception apa pun yang lolos dari callback timer akan
+  // menghentikan spin() dan mematikan node TANPA jejak apa pun di file log
+  // (buffer tidak sempat di-flush, log tersisa 0 byte). Itu sudah terjadi sekali
+  // — clock source mismatch pada rclcpp::Time — dan menghabiskan satu
+  // penerbangan penuh: wahana mengorbit selamanya karena tidak ada lagi yang
+  // memerintah maupun men-timeout-nya. Node yang hidup dan berisik jauh lebih
+  // baik daripada node yang mati diam-diam.
   void update()
+  {
+    try {
+      updateStep();
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+        "EXCEPTION di update(): %s — siklus ini dilewati, node tetap hidup.",
+        e.what());
+    }
+  }
+
+  void updateStep()
   {
     // hitung drop_finished/success dari status + timeout backstop
     bool drop_finished = false;
@@ -321,10 +449,11 @@ private:
 
     if (before != Phase::DROP_APPROACH && out.phase == Phase::DROP_APPROACH) {
       approach_start_ = now();
-      hold_alt_amsl_ = have_veh_pos_ ? veh_alt_ : plan_.release_altitude_agl;
-      entry_reached_ = false;
-      RCLCPP_INFO(get_logger(), "Mulai DROP_APPROACH (hold alt %.1f m AMSL)",
-        hold_alt_amsl_);
+      hold_alt_rel_ = have_rel_alt_ ? rel_alt_m_ : plan_.release_altitude_agl;
+      repos_have_sent_ = false;   // paksa perintah pertama pada fase ini
+      RCLCPP_INFO(get_logger(),
+        "Mulai DROP_APPROACH (hold alt %.1f m relatif home%s) -> giring ke loiter center s",
+        hold_alt_rel_, have_rel_alt_ ? "" : ", FALLBACK release_altitude_agl");
     }
 
     if (out.mode_cmd == ModeCmd::GUIDED) {setMode(guided_mode_name_);}
@@ -334,17 +463,37 @@ private:
       RCLCPP_WARN(get_logger(), "Drop DZ %u DICATAT GAGAL.", dz_index_);
     }
 
-    // streaming setpoint approach: entry dulu, lalu release
+    // Streaming setpoint approach — prec_drop Sec. 2.3 / Fig. 5.
+    //
+    // Referensi PERTAMA adalah PUSAT LOITER s, bukan entry point p ("Its center s
+    // will be the first reference sent to the guidance and control subsystem...
+    // The UAV is supposed to fly towards the point s, and upon approaching it,
+    // loiter around it in a clockwise direction"). p adalah titik SINGGUNG pada
+    // orbit tersebut: di sana course wahana sejajar approach_heading sekaligus
+    // cross-track nol, sehingga syarat capture planner bisa terpenuhi. Menaruh
+    // setpoint di p justru membuat ArduPlane mengorbit p — dan pada orbit itu
+    // cross kecil dan course selaras saling meniadakan, jadi capture tidak
+    // pernah terjadi.
+    //
+    // Setelah planner masuk STATE_FINAL_APPROACH, tujuan pindah ke titik
+    // OVERSHOOT di luar release point sepanjang approach_heading — bukan release
+    // point itu sendiri. Tujuan GUIDED tepat di release point membuat ArduPlane
+    // mulai membelok masuk orbit SEBELUM melewatinya, sehingga wahana tak pernah
+    // melintas lurus dan cross-track velocity saat rilis tidak nol; prec_drop
+    // Sec. 2.4 menyebut justru komponen itu yang mendominasi drop error. Pemicu
+    // drop tetap milik planner (proximity circle), bukan tercapainya setpoint.
+    //
+    // planner_state_ dibaca setiap tick (bukan latch): bila planner jatuh ke
+    // STATE_MISSED lalu replan, bridge otomatis kembali menggiring wahana ke s.
     if (fsm_->phase() == Phase::DROP_APPROACH && plan_available_ && have_veh_pos_) {
-      if (!entry_reached_) {
-        const double d = distMeters(veh_lat_, veh_lon_,
-          plan_.entry_point_lat, plan_.entry_point_lon);
-        if (d < entry_reach_radius_) {entry_reached_ = true;}
-      }
-      if (entry_reached_) {
-        publishSetpoint(plan_.release_point_lat, plan_.release_point_lon, hold_alt_amsl_);
+      if (planner_state_ == AirdropStatus::STATE_FINAL_APPROACH) {
+        const auto ov = offsetLatLon(
+          plan_.release_point_lat, plan_.release_point_lon,
+          plan_.approach_heading, overshoot_distance_);
+        commandTarget(ov.first, ov.second, hold_alt_rel_, plan_.loiter_radius);
       } else {
-        publishSetpoint(plan_.entry_point_lat, plan_.entry_point_lon, hold_alt_amsl_);
+        commandTarget(plan_.loiter_center_lat, plan_.loiter_center_lon,
+          hold_alt_rel_, plan_.loiter_radius);
       }
     }
   }
@@ -357,7 +506,7 @@ private:
   int survey_start_wp_index_{-1};
   int survey_end_wp_index_{-1};
   double approach_timeout_{60.0};
-  double entry_reach_radius_{30.0};
+  double overshoot_distance_{250.0};
   std::string guided_mode_name_{"GUIDED"};
   std::string auto_mode_name_{"AUTO"};
 
@@ -379,20 +528,36 @@ private:
   bool plan_available_{false};
   bool saw_released_{false};
   bool have_veh_pos_{false};
-  bool entry_reached_{false};
+  bool have_rel_alt_{false};
+
+  // Bukan latch — cermin state planner saat ini, dipakai untuk memilih setpoint
+  // (loiter center s vs titik overshoot). Sengaja bisa mundur lagi ke PLANNING
+  // saat missed target supaya bridge ikut kembali menggiring wahana ke s.
+  uint8_t planner_state_{AirdropStatus::STATE_IDLE};
 
   interfaces::msg::AirdropPlan plan_;
   double veh_lat_{0.0}, veh_lon_{0.0}, veh_alt_{0.0};
-  double hold_alt_amsl_{100.0};
+  double rel_alt_m_{0.0};
+  double hold_alt_rel_{100.0};
   rclcpp::Time approach_start_;
+
+  // Status perintah DO_REPOSITION terakhir. repos_ack_ok_ dipakai commandTarget()
+  // untuk memutuskan retry; tanpa itu satu penolakan FCU akan membuat wahana
+  // mengorbit titik lama tanpa jejak bahwa perintahnya tidak pernah berlaku.
+  bool repos_have_sent_{false};
+  bool repos_ack_ok_{false};
+  double repos_sent_lat_{0.0};
+  double repos_sent_lon_{0.0};
+  rclcpp::Time repos_last_attempt_;
 
   rclcpp::Subscription<mavros_msgs::msg::WaypointReached>::SharedPtr sub_reached_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_globalpos_;
   rclcpp::Subscription<interfaces::msg::AirdropPlan>::SharedPtr sub_plan_;
   rclcpp::Subscription<interfaces::msg::AirdropStatus>::SharedPtr sub_status_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr sub_rel_alt_;
   rclcpp::Publisher<interfaces::msg::DropAuthorization>::SharedPtr pub_auth_;
-  rclcpp::Publisher<geographic_msgs::msg::GeoPoseStamped>::SharedPtr pub_setpoint_;
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr cli_set_mode_;
+  rclcpp::Client<mavros_msgs::srv::CommandInt>::SharedPtr cli_reposition_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
