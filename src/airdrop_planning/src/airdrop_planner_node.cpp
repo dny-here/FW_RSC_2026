@@ -154,8 +154,10 @@ private:
 
     proximity_radius_ = get_parameter("release.proximity_radius").as_double();
     mechanism_latency_ = get_parameter("release.mechanism_latency").as_double();
-    entry_capture_radius_ = get_parameter("release.entry_capture_radius").as_double();
-    heading_tolerance_ = get_parameter("release.heading_tolerance").as_double();
+    capture_gate_.entry_capture_radius =
+      get_parameter("release.entry_capture_radius").as_double();
+    capture_gate_.heading_tolerance =
+      get_parameter("release.heading_tolerance").as_double();
     speed_reduction_ = get_parameter("release.speed_reduction").as_double();
     gps_latency_ = get_parameter("release.gps_latency").as_double();
     drop_ack_timeout_ = get_parameter("release.drop_ack_timeout").as_double();
@@ -280,15 +282,8 @@ private:
           state_ = (d_s < 1.5 * approach_params_.loiter_radius) ?
             State::STATE_LOITER : State::STATE_TRANSIT;
 
-          const Ned2D u = uavNed();
-          const double qn = std::cos(plan_->approach_heading);
-          const double qe = std::sin(plan_->approach_heading);
-          const double rel_n = u.north - plan_->entry_point.north;
-          const double rel_e = u.east - plan_->entry_point.east;
-          const double along = rel_n * qn + rel_e * qe;         // (p_u - p)·q
-          const double cross = std::abs(rel_n * qe - rel_e * qn);
-
-          if (along >= 0.0 && cross < entry_capture_radius_ && headingAligned()) {
+          const double course = std::atan2(ground_vel_ned_[1], ground_vel_ned_[0]);
+          if (have_vel_ && entryCaptured(*plan_, uavNed(), course, capture_gate_)) {
             const double gs = std::hypot(ground_vel_ned_[0], ground_vel_ned_[1]);
             const double gs_eff = std::max(0.0, gs - speed_reduction_);
             const Ned2D target_ned = frame_.toNed(
@@ -380,13 +375,6 @@ private:
     return std::hypot(pt.north - u.north, pt.east - u.east);
   }
 
-  bool headingAligned() const
-  {
-    if (!plan_ || !have_vel_) {return false;}
-    const double course = std::atan2(ground_vel_ned_[1], ground_vel_ned_[0]);
-    return std::abs(wrapPi(course - plan_->approach_heading)) < heading_tolerance_;
-  }
-
   void releasePayload()
   {
     drop_ack_ = DropAck::PENDING;
@@ -461,10 +449,13 @@ private:
     m.impact_offset_east = plan_->offset_east;
     const GeoPoint rp_geo = frame_.toGeo(plan_->release_point);
     const GeoPoint ep_geo = frame_.toGeo(plan_->entry_point);
+    const GeoPoint lc_geo = frame_.toGeo(plan_->loiter_center);
     m.release_point_lat = rp_geo.lat_deg;
     m.release_point_lon = rp_geo.lon_deg;
     m.entry_point_lat = ep_geo.lat_deg;
     m.entry_point_lon = ep_geo.lon_deg;
+    m.loiter_center_lat = lc_geo.lat_deg;
+    m.loiter_center_lon = lc_geo.lon_deg;
     pub_plan_->publish(m);
   }
 
@@ -520,8 +511,7 @@ private:
 
   double proximity_radius_{15.0};
   double mechanism_latency_{0.15};
-  double entry_capture_radius_{25.0};
-  double heading_tolerance_{0.35};
+  CaptureGate capture_gate_{};
   double speed_reduction_{0.0};
   double gps_latency_{0.1};
   double drop_ack_timeout_{2.0};

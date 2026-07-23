@@ -34,6 +34,8 @@ if(BUILD_TESTING)
   target_include_directories(test_ballistic_model PRIVATE include)
   ament_add_gtest(test_geo_utils test/test_geo_utils.cpp)
   target_include_directories(test_geo_utils PRIVATE include)
+  ament_add_gtest(test_release_point_solver test/test_release_point_solver.cpp)
+  target_include_directories(test_release_point_solver PRIVATE include)
 endif()
 
 ament_package()

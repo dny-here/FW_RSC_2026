@@ -21,7 +21,14 @@ float64 impact_offset_east   # [m]  perpindahan balistik (y pada Algorithm 1)
 
 # Duplikat titik kunci dalam WGS-84 (deg) agar mission_bridge bisa
 # memerintah setpoint GUIDED global tanpa mengetahui datum lokal.
+#
+# loiter_center adalah referensi PERTAMA yang dikirim ke guidance (prec_drop
+# Sec. 2.3: "Its center s will be the first reference sent to the guidance and
+# control subsystem"). entry_point TIDAK pernah menjadi tujuan terbang — ia
+# titik singgung pada orbit di sekitar loiter_center.
 float64 entry_point_lat
 float64 entry_point_lon
 float64 release_point_lat
 float64 release_point_lon
+float64 loiter_center_lat
+float64 loiter_center_lon

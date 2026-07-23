@@ -43,6 +43,36 @@ struct ApproachPlanNed
   double offset_east{0.0};
 };
 
+struct CaptureGate
+{
+  double entry_capture_radius{25.0};  // cross-track maks saat melewati p [m]
+  double heading_tolerance{0.35};     // beda course vs approach_heading [rad]
+};
+
+// Syarat "wahana mencapai titik p pada arah yang benar" (paper Sec. 2.3:
+// "Once it reaches the point p, it will recalculate the release point").
+//
+// INVARIAN YANG MENOPANG SELURUH SLICE INI: syarat ini hanya bisa terpenuhi
+// bila wahana mengorbit LOITER CENTER (s), bukan entry point (p). Pada orbit
+// CW berpusat s dengan radius r, titik p adalah titik singgung — di sana
+// cross-track nol DAN course sejajar approach_heading secara bersamaan.
+// Bila wahana justru mengorbit p, kedua syarat itu saling meniadakan (saat
+// cross kecil course melintang, saat course selaras cross = r) sehingga drop
+// TIDAK PERNAH terpicu. Dikunci oleh test_release_point_solver.
+inline bool entryCaptured(
+  const ApproachPlanNed & plan, const Ned2D & uav,
+  double course, const CaptureGate & gate)
+{
+  const double qn = std::cos(plan.approach_heading);
+  const double qe = std::sin(plan.approach_heading);
+  const double rel_n = uav.north - plan.entry_point.north;
+  const double rel_e = uav.east - plan.entry_point.east;
+  const double along = rel_n * qn + rel_e * qe;          // (p_u - p)·q
+  const double cross = std::abs(rel_n * qe - rel_e * qn);
+  return along >= 0.0 && cross < gate.entry_capture_radius &&
+         std::abs(wrapPi(course - plan.approach_heading)) < gate.heading_tolerance;
+}
+
 class ReleasePointSolver
 {
 public:
