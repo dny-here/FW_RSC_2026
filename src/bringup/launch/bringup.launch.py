@@ -16,7 +16,7 @@ def generate_launch_description():
 
     # 2. ArduPilot SITL
     # Converted "output add 127.0.0.1:14551" into the standard --out startup flag
-    sitl_param_file = os.path.expanduser('~/FW_RSC_2026/src/simulation/config/alti_transition_quad.param')
+    sitl_param_file = os.path.expanduser('~/Documents/FW_RSC_2026/src/simulation/config/alti_transition_quad.param')
     sitl_process = ExecuteProcess(
         cmd=[
             'sim_vehicle.py', '-v', 'ArduPlane', '--model', 'JSON',
@@ -74,11 +74,23 @@ def generate_launch_description():
         )
     )
 
+    # 8. Drop Mechanism Launch
+    # Menyediakan service 'drop' (DropPayload -> MAV_CMD_DO_SET_SERVO via MAVROS).
+    # Tanpa node ini seluruh rantai berjalan sempurna sampai titik rilis lalu gagal
+    # di langkah terakhir dengan "Drop service /drop tidak tersedia!" — payload tidak
+    # pernah lepas meski geometri approach sudah benar.
+    drop_mechanism_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('drop_mechanism'), 'launch', 'drop_mechanism.launch.py')
+        )
+    )
+
     # --- DELAY CUSTOM NODES ---
     # Waits 20 seconds before launching your code so MAVROS is fully initialized
     delayed_custom_nodes = TimerAction(
         period=20.0,
-        actions=[target_recognition_launch, airdrop_planner_launch, mission_bridge_launch]
+        actions=[target_recognition_launch, airdrop_planner_launch, mission_bridge_launch,
+                 drop_mechanism_launch]
     )
 
     return LaunchDescription([

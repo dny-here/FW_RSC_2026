@@ -70,4 +70,7 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
+# So bringup can includ them
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME})
 ament_package()
