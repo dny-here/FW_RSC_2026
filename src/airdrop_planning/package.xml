@@ -14,10 +14,11 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
   <depend>interfaces</depend>
 
   <exec_depend>ros2launch</exec_depend>

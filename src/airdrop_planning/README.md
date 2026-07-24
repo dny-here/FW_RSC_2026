@@ -6,42 +6,60 @@ Fixed-Wing UAV* (referensi `prec_drop`), Sec. 2.2–2.3.
 
 ## Alur kerja
 
+Node **swakelola** (sesuai gambar arsitektur sistem): satu node yang
+merencanakan **dan** menerbangkan approach drop, sehingga cukup
+`airdrop_planning` + `target_recognition` yang berjalan di Raspberry Pi —
+tanpa `mission_bridge` terpisah.
+
 ```
-target_recognition ──TargetEstimate──▶ airdrop_planner ──AirdropPlan──▶ guidance/bringup
-        ▲                                   │  ▲                            │
-        │                                   │  └── NavSatFix / Odometry /   ▼
-     kamera                                 │      wind_estimation      ArduPilot (FCU)
-                                            └──UInt8 drop_command──▶ node mekanisme drop
+target_recognition ──action execute_airdrop (goal: TargetEstimate+bay_index)──▶ airdrop_planner
+        ▲   kamera        ◀── feedback AirdropStatus @10Hz / result drop_successful ──┘
+        │                                        │  ▲                    │
+        │                                        │  └ NavSatFix/rel_alt/  │ DO_REPOSITION (tujuan
+     (locked target)                             │    velocity_local/wind │ GUIDED) + DO_SET_SERVO
+                                                 │      (MAVROS)          ▼   + set_mode AUTO → FCU
+                                                 └──────────────────────────┘
 ```
 
-State machine: `IDLE → PLANNING → TRANSIT → (loiter di s) → FINAL_APPROACH → RELEASED`,
-dengan cabang `MISSED → PLANNING` bila wahana melewati release point tanpa
-masuk *release proximity circle* (paper, Fig. 1).
+Guidance memakai **L1/TECS ArduPilot**: node hanya mengirim *setpoint posisi*
+lewat `MAV_CMD_DO_REPOSITION` (COMMAND_INT), bukan roll/pitch (kotak "LOS
+Guidance" pada rancangan tidak diimplementasi). Perintah, bukan stream —
+dikirim sekali per perubahan tujuan, di-retry hanya bila FCU menolak.
+`setpoint_position/global` **tidak** dipakai: ArduPlane membuang lat/lon-nya
+pada fixed-wing (lihat CLAUDE.md).
 
-Di titik entry `p`, release point **dihitung ulang** memakai *ground velocity*
-aktual wahana (bukan prediksi airspeed+angin) dengan heading garis
-dipertahankan — persis strategi paper Sec. 2.3.
+State machine: `IDLE → PLANNING → TRANSIT → LOITER (di s) → FINAL_APPROACH → RELEASED`,
+dengan cabang `MISSED → PLANNING` (≤ `max_replans`) bila wahana melewati release
+point tanpa masuk *release proximity circle* (paper, Fig. 1). Referensi terbang
+pertama adalah **loiter center s**; `p` adalah titik singgung pada orbit CW di
+sekitar s — di sanalah `entryCaptured()` terpenuhi. Di `p`, release point
+**dihitung ulang** memakai *ground velocity* aktual (heading dikunci), lalu
+tujuan pindah ke titik *overshoot* di luar release point agar lintasan lurus
+(paper Sec. 2.3–2.4). Setelah selesai/abort, node mengembalikan wahana ke AUTO.
 
-## Topik & service
+## Antarmuka
 
 | Arah | Nama | Tipe |
 |---|---|---|
-| sub | `target_recognition/target_estimate` | `interfaces/TargetEstimate` |
+| action server | `execute_airdrop` | `interfaces/action/TargetAirdrop` (goal: `gps_estimation`+`bay_index`, feedback: `AirdropStatus`, result: `drop_successful`) |
 | sub | `mavros/global_position/global` | `sensor_msgs/NavSatFix` |
-| sub | `mavros/local_position/odom` | `nav_msgs/Odometry` (ENU→NED di node) |
+| sub | `mavros/global_position/rel_alt` | `std_msgs/Float64` |
+| sub | `mavros/local_position/velocity_local` | `geometry_msgs/TwistStamped` (ENU→NED di node) |
 | sub | `mavros/wind_estimation` | `geometry_msgs/TwistWithCovarianceStamped` |
-| pub | `airdrop/plan` | `interfaces/AirdropPlan` |
+| pub | `airdrop/plan` | `interfaces/AirdropPlan` (telemetri geometri) |
 | pub | `airdrop/status` | `interfaces/AirdropStatus` |
-| pub | `airdrop/drop_command` | `std_msgs/UInt8` (bay index) |
-| srv | `airdrop/start` | `interfaces/StartAirdrop` |
+| srv client | `mavros/cmd/command_int` | `mavros_msgs/srv/CommandInt` (DO_REPOSITION, tujuan GUIDED) |
+| srv client | `mavros/cmd/command` | `mavros_msgs/srv/CommandLong` (DO_SET_SERVO, lepas payload) |
+| srv client | `mavros/set_mode` | `mavros_msgs/srv/SetMode` (resume AUTO) |
 
 ## Build & test
 
 ```bash
-colcon build --packages-select interfaces airdrop_planning
+# interfaces WAJIB dibangun sebelum konsumennya
+colcon build --symlink-install --packages-select interfaces airdrop_planning
 source install/setup.bash
 ros2 launch airdrop_planning airdrop_planning.launch.py
-colcon test --packages-select airdrop_planning   # unit test model balistik
+colcon test --packages-select airdrop_planning   # ballistic + geo_utils + release_point_solver
 ```
 
 ## Identifikasi C_D (WAJIB sebelum lomba)

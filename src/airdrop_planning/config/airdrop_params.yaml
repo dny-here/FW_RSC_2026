@@ -8,21 +8,45 @@ airdrop_planner:
       dt: 0.005
 
     approach:
-      release_alt_agl: 50.0     # paper memakai 50 m; sesuaikan aturan/NOTAM
+      release_alt_agl: 100.0    # KRTI: 100 m AGL; sesuaikan aturan/NOTAM
       release_airspeed: 18.0    # m/s, samakan dgn TRIM_ARSPD_CM ArduPilot
       distance: 300.0           # d — final approach; perbesar jika transien roll besar
-      loiter_radius: 80.0
+      loiter_radius: 80.0       # dikirim eksplisit pada DO_REPOSITION param3
       min_wind_for_heading: 1.0
+      overshoot_distance: 250.0 # tujuan GUIDED di luar release agar lintas lurus
 
     release:
-      proximity_radius: 15.0      # release proximity circle
+      # release proximity circle. JANGAN turunkan ke orde meter: trigger_radius
+      # efektif = max(proximity_radius, ground_speed * mechanism_latency) ~ 3 m
+      # pada 20 m/s; nilai lebih kecil bikin drop hanya terpicu bila lewat sangat
+      # dekat — cross-track beberapa meter langsung MISSED + replan berulang.
+      proximity_radius: 12.0
       mechanism_latency: 0.15     # s: servo + pintu bay terbuka
-      entry_capture_radius: 25.0
+      entry_capture_radius: 25.0  # cross-track maksimum saat melewati p
+      heading_tolerance: 0.35     # rad (~20 deg) alignment course vs approach
+      speed_reduction: 0.0        # m/s — paper: 2.0 bila motor DIMATIKAN sblm rilis
+      gps_latency: 0.1            # s — proyeksi posisi (paper Sec. 5.4)
+      drop_ack_timeout: 2.0       # s — tunggu COMMAND_ACK DO_SET_SERVO dari FCU
 
     mission:
       num_payloads: 2
+      max_replans: 3              # batas replan saat missed target
+      num_bays: 2                 # jumlah bay (validasi bay_index goal)
 
     topics:
       global_position: "mavros/global_position/global"
-      odom: "mavros/local_position/odom"
+      rel_alt: "mavros/global_position/rel_alt"        # altitude relatif home
+      velocity: "mavros/local_position/velocity_local" # ENU, bukan odom.twist
       wind: "mavros/wind_estimation"
+      command_int: "mavros/cmd/command_int"  # DO_REPOSITION (tujuan GUIDED)
+      command_long: "mavros/cmd/command"     # DO_SET_SERVO (lepas payload)
+      set_mode: "mavros/set_mode"            # kembali ke AUTO saat selesai
+
+    mode:
+      auto_name: "AUTO"           # nama custom mode ArduPlane utk resume misi
+
+    drop:
+      # bay_index -> channel servo AUX (langsung ke FCU via DO_SET_SERVO).
+      # Channel HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC).
+      servo_channel_bay: [12, 13] # channel bay 0 & 1 — SESUAIKAN wiring
+      pwm_release: 1900           # PWM posisi "lepas"

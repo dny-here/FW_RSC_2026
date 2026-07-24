@@ -9,6 +9,9 @@
 
 interfaces/TargetEstimate gps_estimation
 
+# Dropping-mechanism bay to release for this goal (0 or 1).
+uint8 bay_index
+
 ---
 
 # Result

@@ -18,3 +18,18 @@ float64 release_altitude_agl # [m]
 float64 fall_time            # [s]  hasil simulasi balistik
 float64 impact_offset_north  # [m]  perpindahan balistik (x pada Algorithm 1)
 float64 impact_offset_east   # [m]  perpindahan balistik (y pada Algorithm 1)
+
+# Duplikat titik kunci dalam WGS-84 (deg) untuk telemetri/logging GCS.
+# Node airdrop_planning sendiri bekerja di NED dan memerintah setpoint GUIDED
+# langsung ke FCU; field ini hanya memaparkan geometri rencana ke luar.
+#
+# loiter_center (s) adalah referensi PERTAMA yang diterbangkan (prec_drop
+# Sec. 2.3: "Its center s will be the first reference sent to the guidance and
+# control subsystem"). entry_point (p) TIDAK pernah menjadi tujuan terbang —
+# ia titik singgung pada orbit di sekitar loiter_center.
+float64 entry_point_lat
+float64 entry_point_lon
+float64 release_point_lat
+float64 release_point_lon
+float64 loiter_center_lat
+float64 loiter_center_lon
