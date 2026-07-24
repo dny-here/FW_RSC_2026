@@ -1,7 +1,0 @@
-# perintahkan node airdrop_planning memulai sekuens drop
-# untuk target tertentu (dipanggil oleh mission manager / GCS bridge).
-uint8 target_id     # DZ
-uint8 bay_index     # bay mekanisme dropping yang akan dilepas (0/1)
----
-bool accepted
-string message
