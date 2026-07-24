@@ -7,17 +7,18 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(mavros_msgs REQUIRED)
 find_package(interfaces REQUIRED)
 
 include_directories(include)
 
 add_executable(airdrop_planner_node src/airdrop_planner_node.cpp)
 ament_target_dependencies(airdrop_planner_node
-  rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs interfaces)
+  rclcpp rclcpp_action std_msgs sensor_msgs geometry_msgs mavros_msgs interfaces)
 
 install(TARGETS airdrop_planner_node
   DESTINATION lib/${PROJECT_NAME})
@@ -30,8 +31,13 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  # Unit balistik + solver release point + geo_utils — semuanya ROS-free.
   ament_add_gtest(test_ballistic_model test/test_ballistic_model.cpp)
   target_include_directories(test_ballistic_model PRIVATE include)
+  ament_add_gtest(test_geo_utils test/test_geo_utils.cpp)
+  target_include_directories(test_geo_utils PRIVATE include)
+  ament_add_gtest(test_release_point_solver test/test_release_point_solver.cpp)
+  target_include_directories(test_release_point_solver PRIVATE include)
 endif()
 
 ament_package()
