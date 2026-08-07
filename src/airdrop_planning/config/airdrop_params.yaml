@@ -8,7 +8,7 @@ airdrop_planner:
       dt: 0.005
 
     approach:
-      release_alt_agl: 100.0    # KRTI: 100 m AGL; sesuaikan aturan/NOTAM
+      release_alt_agl: 50.0   # KRTI: 100 m AGL; sesuaikan aturan/NOTAM
       release_airspeed: 18.0    # m/s, samakan dgn TRIM_ARSPD_CM ArduPilot
       distance: 300.0           # d — final approach; perbesar jika transien roll besar
       loiter_radius: 80.0       # dikirim eksplisit pada DO_REPOSITION param3
