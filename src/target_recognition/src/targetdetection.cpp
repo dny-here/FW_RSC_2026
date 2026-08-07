@@ -5,6 +5,7 @@
 #include "cv_bridge/cv_bridge.h"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
+#include "std_msgs/msg/float64.hpp"
 
 // Action and Custom Message Dependencies
 #include "interfaces/msg/target_estimate.hpp"
@@ -60,6 +61,10 @@ public:
         subscription_camera_ = this->create_subscription<sensor_msgs::msg::Image>(
              get_parameter("topics.camera").as_string(), qos_profile, 
              std::bind(&TargetDetectionNode::cameraCallback, this, _1));
+
+        sub_rel_alt_ = this->create_subscription<std_msgs::msg::Float64>(
+            get_parameter("topics.rel_alt").as_string(), qos_profile,
+            std::bind(&TargetDetectionNode::loadAlt, this, _1));
              
         // Initialize mission state
         state_ = STATE_SEARCHING;
@@ -97,6 +102,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_camera_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_odom_;
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr subscription_position_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr sub_rel_alt_;
 
     // -------------- Initialization -----------------------
     void declareParams()
@@ -131,6 +137,7 @@ private:
         this->declare_parameter("topics.odom", "mavros/local_position/odom");
         this->declare_parameter("topics.camera", "camera_node");
         this->declare_parameter("topics.position", "mavros/global_position/global");
+        this->declare_parameter("topics.rel_alt", "mavros/global_position/rel_alt");
     }
 
     void loadParams()
@@ -175,7 +182,10 @@ private:
     void loadPosition(const sensor_msgs::msg::NavSatFix::ConstSharedPtr msg) {
         this->telemetry_params.lat = msg->latitude;
         this->telemetry_params.lon = msg->longitude;
-        this->telemetry_params.alt = msg->altitude;
+    }
+
+    void loadAlt(const std_msgs::msg::Float64::ConstSharedPtr msg) {
+        this->telemetry_params.alt = msg->data;
     }
 
     // -------------- Camera Loading -----------------------
@@ -392,7 +402,7 @@ private:
                     detection_counter_++;
                     
                     // Temporal filter: Require multiple frames to confirm the target is stable
-                    if (detection_counter_ >= 30) {
+                    if (detection_counter_ >= 10) {
                         state_ = STATE_LOCKED;
                         RCLCPP_INFO(this->get_logger(), 
                             "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Triggering Action.",
