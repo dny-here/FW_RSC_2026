@@ -46,7 +46,5 @@ airdrop_planner:
       auto_name: "AUTO"           # nama custom mode ArduPlane utk resume misi
 
     drop:
-      # bay_index -> channel servo AUX (langsung ke FCU via DO_SET_SERVO).
-      # Channel HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC).
-      servo_channel_bay: [12, 13] # channel bay 0 & 1 — SESUAIKAN wiring
-      pwm_release: 1900           # PWM posisi "lepas"
+      servo_channel_bay: [10]
+      pwm_release: [1290, 2090]

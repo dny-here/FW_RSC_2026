@@ -26,10 +26,11 @@
 //            mavros/set_mode (kembali ke AUTO saat misi drop selesai)
 //
 // Servo bay ditembak LANGSUNG ke FCU (tanpa node relay terpisah) agar cukup
-// airdrop_planning + target_recognition yang jalan di Raspi. Peta bay_index ->
-// channel servo + PWM ada di parameter drop.servo_channel_bay / drop.pwm_release.
-// Channel bay HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC) —
-// lihat commit "pindahkan servo bay ke channel 12/13 yang bebas".
+// airdrop_planning + target_recognition yang jalan di Raspi. Wiring saat ini:
+// SATU servo (drop.servo_channel_bay = [10]) melayani kedua payload; yang
+// membedakan bay adalah POSISI servo — drop.pwm_release berisi satu PWM per
+// bay ([bay0, bay1]), diindeks dengan bay_index dari goal.
+// Channel bay HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC).
 //
 // PENTING — kenapa DO_REPOSITION dan bukan setpoint_position/global:
 // ArduPlane membuang lat/lon pada SET_POSITION_TARGET_GLOBAL_INT (hanya altitude
@@ -181,10 +182,12 @@ private:
     declare_parameter("topics.set_mode", std::string("mavros/set_mode"));
     declare_parameter("mode.auto_name", std::string("AUTO"));
 
-    // mekanisme drop: peta bay_index -> channel servo AUX + PWM posisi "lepas".
+    // mekanisme drop: channel servo AUX + PWM posisi "lepas" per bay.
+    // Satu entri channel = satu servo dipakai bersama kedua bay (wiring saat
+    // ini); bila kelak tiap bay punya servo sendiri, isi satu channel per bay.
     // Channel bay HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC).
-    declare_parameter("drop.servo_channel_bay", std::vector<int64_t>{12, 13});
-    declare_parameter("drop.pwm_release", 1900);
+    declare_parameter("drop.servo_channel_bay", std::vector<int64_t>{10});
+    declare_parameter("drop.pwm_release", std::vector<int64_t>{1290, 2090});
   }
 
   void loadParams()
@@ -220,7 +223,18 @@ private:
 
     auto_mode_name_ = get_parameter("mode.auto_name").as_string();
     servo_channels_ = get_parameter("drop.servo_channel_bay").as_integer_array();
-    pwm_release_ = static_cast<int>(get_parameter("drop.pwm_release").as_int());
+    pwm_release_ = get_parameter("drop.pwm_release").as_integer_array();
+
+    // Salah konfigurasi di sini = payload tak pernah lepas saat lomba, dan baru
+    // ketahuan di udara. Teriak sekarang, bukan nanti di releasePayload().
+    if (servo_channels_.empty()) {
+      RCLCPP_ERROR(get_logger(), "drop.servo_channel_bay KOSONG — drop tak akan bisa ditembak!");
+    }
+    if (pwm_release_.size() < num_bays_) {
+      RCLCPP_ERROR(get_logger(),
+        "drop.pwm_release cuma %zu nilai untuk %zu bay — bay terakhir tak punya posisi lepas!",
+        pwm_release_.size(), num_bays_);
+    }
   }
 
   // ------------------------- callback sensor -------------------------
@@ -579,17 +593,21 @@ private:
   }
 
   // Lepas payload: tembak servo bay LANGSUNG ke FCU via MAV_CMD_DO_SET_SERVO
-  // (CommandLong). bay_index -> channel dari drop.servo_channel_bay, PWM =
-  // drop.pwm_release. Tanpa node relay; pemetaan hardware ada di parameter.
+  // (CommandLong). Channel dari drop.servo_channel_bay (satu servo dipakai
+  // bersama bila cuma satu entri), posisi lepas = drop.pwm_release[bay_index].
+  // Tanpa node relay; pemetaan hardware ada di parameter.
   void releasePayload()
   {
     drop_ack_ = DropAck::PENDING;
     drop_sent_time_ = now();
 
-    if (active_bay_ >= servo_channels_.size()) {
+    // Satu servo untuk kedua bay -> channel selalu entri pertama; yang
+    // membedakan payload adalah PWM. Satu servo per bay -> indeks bay_index.
+    const size_t ch_idx = (servo_channels_.size() == 1) ? 0u : active_bay_;
+    if (ch_idx >= servo_channels_.size() || active_bay_ >= pwm_release_.size()) {
       RCLCPP_ERROR(get_logger(),
-        "bay_index %u di luar drop.servo_channel_bay (ukuran %zu)!",
-        active_bay_, servo_channels_.size());
+        "bay_index %u di luar konfigurasi drop (channel %zu, pwm %zu)!",
+        active_bay_, servo_channels_.size(), pwm_release_.size());
       drop_ack_ = DropAck::FAILED;
       return;
     }
@@ -600,13 +618,14 @@ private:
       return;
     }
 
-    const int channel = static_cast<int>(servo_channels_[active_bay_]);
+    const int channel = static_cast<int>(servo_channels_[ch_idx]);
+    const int pwm = static_cast<int>(pwm_release_[active_bay_]);
     auto req = std::make_shared<mavros_msgs::srv::CommandLong::Request>();
     req->broadcast = false;
     req->command = 183;  // MAV_CMD_DO_SET_SERVO
     req->confirmation = 0;
-    req->param1 = static_cast<float>(channel);       // nomor servo output
-    req->param2 = static_cast<float>(pwm_release_);  // PWM posisi "lepas"
+    req->param1 = static_cast<float>(channel);  // nomor servo output
+    req->param2 = static_cast<float>(pwm);      // PWM posisi "lepas" bay ini
 
     cli_command_->async_send_request(req,
       [this, channel](rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture fut) {
@@ -617,7 +636,7 @@ private:
       });
 
     RCLCPP_INFO(get_logger(), "RELEASE! bay=%u -> servo ch=%d pwm=%d (miss %.1f m)",
-      active_bay_, channel, pwm_release_, release_miss_);
+      active_bay_, channel, pwm, release_miss_);
   }
 
   void finish(rclcpp_action::ResultCode code, bool success, const std::string & msg)
@@ -745,9 +764,9 @@ private:
   double overshoot_distance_{250.0};
   std::string auto_mode_name_{"AUTO"};
 
-  // Mekanisme drop (servo bay langsung ke FCU).
-  std::vector<int64_t> servo_channels_{12, 13};
-  int pwm_release_{1900};
+  // Mekanisme drop (servo bay langsung ke FCU): satu servo, PWM per bay.
+  std::vector<int64_t> servo_channels_{10};
+  std::vector<int64_t> pwm_release_{1290, 2090};
 
   // Pelacakan DO_REPOSITION (dedup + retry).
   double repos_sent_lat_{0.0};
