@@ -12,22 +12,22 @@ target_recognition_node:
     
     # Camera lens distortion coefficients (k1, k2, p1, p2, k3)
     distortion:
-      coef_1: -0.41802327018241026
-      coef_2: 0.50715243805833121
+      coef_1: 0.071927369814543243
+      coef_2: 0.014299964295814569
       coef_3: 0.0
       coef_4: 0.0
-      coef_5: -0.57843596847939704
+      coef_5: -0.52766545702795598
     
     # Intrinsic Camera Matrix (3x3)
     # [ fx   0  cx ]
     # [  0  fy  cy ]
     # [  0   0   1 ]
     camera:
-      mat_11: 657.46697810243404
+      mat_11: 468.22237546393342
       mat_12: 0.0
       mat_13: 319.5
       mat_21: 0.0
-      mat_22: 657.46697810243404
+      mat_22: 468.22237546393342
       mat_23: 239.5
       mat_31: 0.0
       mat_32: 0.0
@@ -42,5 +42,5 @@ target_recognition_node:
     # Subscription Topics
     topics:
       odom: "mavros/local_position/odom"
-      camera: "camera_node" # Note: often this is "camera/image_raw" on real hardware
+      camera: "camera/image_raw"
       position: "mavros/global_position/global"
