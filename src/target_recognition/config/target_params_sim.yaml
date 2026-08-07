@@ -65,3 +65,4 @@ target_recognition_node:
       odom: "mavros/local_position/odom"
       camera: "camera_node"
       position: "mavros/global_position/global"
+      rel_alt: "mavros/global_position/rel_alt"   
