@@ -8,9 +8,13 @@ endif()
 # Find ament build tools
 find_package(ament_cmake REQUIRED)
 
-# Install the launch directory into the package's share folder
+# Install the launch and config directories into the package's share folder.
+# config/ berisi bridge.yaml: dulu file ini ada di root workspace dan dimuat
+# lewat path relatif, sehingga launch hanya jalan kalau kebetulan dijalankan
+# dari root. Sekarang dipasang ke share/ dan dirujuk dengan path absolut.
 install(DIRECTORY
   launch
+  config
   DESTINATION share/${PROJECT_NAME}
 )
 
