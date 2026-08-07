@@ -1,0 +1,67 @@
+# Profil SIMULASI (Gazebo). Kamera hardware punya intrinsik yang sama sekali
+# berbeda — pakai target_params.yaml untuk terbang sungguhan.
+#
+# Dipilih lewat argumen launch:
+#   ros2 launch bringup sim.launch.py          -> file ini
+#   ros2 launch bringup bringup.launch.py      -> target_params.yaml (hardware)
+#
+# Blok `starting:` sengaja TIDAK ada di sini: targetdetection.cpp tidak pernah
+# men-declare parameter itu, jadi isinya diabaikan diam-diam.
+target_recognition_node:
+  ros__parameters:
+
+    # HSV Thresholds for the target (e.g., Orange Tarp)
+    # Terpal di src/simulation/models/orange_tarp_target/model.sdf memakai
+    # diffuse 1.0 0.5 0.0 = HSV OpenCV (15, 255, 255) — tepat di tengah jendela
+    # di bawah, jadi ambang hardware dipakai apa adanya tanpa penyetelan ulang.
+    thresholding:
+      high_H: 25
+      high_S: 255
+      high_V: 255
+      low_H: 10
+      low_S: 100
+      low_V: 100
+
+    # Camera lens distortion coefficients (k1, k2, p1, p2, k3)
+    # Kamera Gazebo adalah pinhole ideal: TIDAK ada distorsi. Memasukkan
+    # koefisien lensa nyata di sini justru menyuntikkan galat yang tidak ada.
+    distortion:
+      coef_1: 0.0
+      coef_2: 0.0
+      coef_3: 0.0
+      coef_4: 0.0
+      coef_5: 0.0
+
+    # Intrinsic Camera Matrix (3x3)
+    # [ fx   0  cx ]
+    # [  0  fy  cy ]
+    # [  0   0   1 ]
+    #
+    # Diturunkan dari src/simulation/models/gimbal_small_3d/model.sdf:
+    #   horizontal_fov = 2.0 rad, citra 640x480
+    #   fx = fy = (640/2) / tan(2.0/2) = 205.46963709898583
+    #   cx = (640-1)/2 = 319.5, cy = (480-1)/2 = 239.5
+    #
+    # fx HARUS cocok dengan kamera yang benar-benar dipakai. Nilai hardware
+    # (468.22) menyiratkan FOV 68.7 derajat — salah 2.28x untuk kamera Gazebo,
+    # dan fx yang salah menskalakan SETIAP offset tanah dengan faktor yang sama:
+    # deteksi menggambar kotak sempurna di atas terpal sementara lat/lon hasil
+    # georeferensi meleset ratusan meter, tanpa satu pun pesan error.
+    camera:
+      mat_11: 205.46963709898583
+      mat_12: 0.0
+      mat_13: 319.5
+      mat_21: 0.0
+      mat_22: 205.46963709898583
+      mat_23: 239.5
+      mat_31: 0.0
+      mat_32: 0.0
+      mat_33: 1.0
+
+    # Subscription Topics
+    # camera: nama topik ROS hasil ros_gz_bridge (lihat bringup/config/bridge.yaml).
+    # Di-override lagi oleh argumen camera_topic milik bringup.launch.py.
+    topics:
+      odom: "mavros/local_position/odom"
+      camera: "camera_node"
+      position: "mavros/global_position/global"

@@ -70,4 +70,12 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
+# Install launch dan config ke share/. TANPA baris ini keduanya hanya ada di
+# install/ sebagai sisa build lama: rebuild bersih (rm -rf build install)
+# menghapusnya dan bringup.launch.py / sim.launch.py langsung gagal saat
+# get_package_share_directory(...) + '/config/target_params*.yaml'.
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_package()
