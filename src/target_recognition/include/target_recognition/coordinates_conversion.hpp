@@ -48,6 +48,8 @@ public:
         if (!is_initialized) {
             kf.statePost.at<double>(0) = measured_N;
             kf.statePost.at<double>(1) = measured_E;
+            kf.statePre.at<double>(0) = measured_N; // Add this
+            kf.statePre.at<double>(1) = measured_E; // Add this
             is_initialized = true;
             return cv::Point2d(measured_N, measured_E);
         }
@@ -57,6 +59,14 @@ public:
         cv::Mat estimated_state = kf.correct(measurement);
 
         return cv::Point2d(estimated_state.at<double>(0), estimated_state.at<double>(1));
+    }
+
+    void reset() {
+        is_initialized = false;
+        
+        // Reset the uncertainty to high so it snaps quickly to the new target
+        cv::setIdentity(kf.errorCovPost, cv::Scalar::all(100.0));
+        cv::setIdentity(kf.errorCovPre, cv::Scalar::all(100.0));
     }
 };
 

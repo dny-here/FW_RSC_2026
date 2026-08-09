@@ -88,6 +88,7 @@ private:
     uint8_t active_dz_{0};
     int detection_counter_; // Tracks successful Kalman filter updates
     GPSCoordinate final_target_;
+    int drop_count_ = 0;
 
     cv::Mat prev_gray_frame_;
     std::vector<cv::Point2f> prev_features_;
@@ -103,6 +104,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_odom_;
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr subscription_position_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr sub_rel_alt_;
+    rclcpp::TimerBase::SharedPtr cooldown_timer_;
 
     // -------------- Initialization -----------------------
     void declareParams()
@@ -116,18 +118,18 @@ private:
         this->declare_parameter("thresholding.low_V", 100);
 
         // --- Camera Lens Radial/Tangential Distortion Coefficients ---
-        this->declare_parameter("distortion.coef_1", -0.41802327018241026);
-        this->declare_parameter("distortion.coef_2", 0.50715243805833121);
+        this->declare_parameter("distortion.coef_1", 0.071927369814543243);
+        this->declare_parameter("distortion.coef_2", 0.014299964295814569);
         this->declare_parameter("distortion.coef_3", 0.0);
         this->declare_parameter("distortion.coef_4", 0.0);
-        this->declare_parameter("distortion.coef_5", -0.57843596847939704);
+        this->declare_parameter("distortion.coef_5", -0.52766545702795598);
 
         // --- Intrinsic Camera Matrix Parameters ---
-        this->declare_parameter("camera.mat_11", 657.46697810243404);
+        this->declare_parameter("camera.mat_11", 468.22237546393342);
         this->declare_parameter("camera.mat_12", 0.0);
         this->declare_parameter("camera.mat_13", 319.5);
         this->declare_parameter("camera.mat_21", 0.0);
-        this->declare_parameter("camera.mat_22", 657.46697810243404);
+        this->declare_parameter("camera.mat_22", 468.22237546393342);
         this->declare_parameter("camera.mat_23", 239.5);
         this->declare_parameter("camera.mat_31", 0.0);
         this->declare_parameter("camera.mat_32", 0.0);
@@ -254,11 +256,19 @@ private:
     // -------------- Image Processing -----------------------
     std::vector<cv::Point2f> processImage(cv::Mat& frame)
     {
-        cv::Mat frame_HSV, frame_threshold;
+        cv::Mat small_frame, frame_MSCRP, frame_HSV, frame_threshold;
         std::vector<cv::Point2f> valid_centers;
 
+        // An 800x640 image becomes 400x320. This runs 4x faster!
+        float scale = 0.5f;
+        cv::resize(frame, small_frame, cv::Size(), scale, scale, cv::INTER_LINEAR);
+
+        // MSCRP Color Constancy
+        std::vector<double> scales = {15.0, 80.0, 250.0};
+        cv::Mat frame_MSCR = msrcp(small_frame, scales, 1.0f, 1.0f);
+
         // Convert to HSV for robust color thresholding against varied lighting
-        cv::cvtColor(frame, frame_HSV, COLOR_BGR2HSV);
+        cv::cvtColor(frame_MSCR, frame_HSV, COLOR_BGR2HSV);
         cv::inRange(frame_HSV, 
                     cv::Scalar(thresholding_params.low_H, thresholding_params.low_S, thresholding_params.low_V), 
                     cv::Scalar(thresholding_params.high_H, thresholding_params.high_S, thresholding_params.high_V), 
@@ -269,27 +279,43 @@ private:
 
         for (const auto& contour : contours) {
             // Noise filter: Ignore tiny speckles
-            if (contourArea(contour) < 50) continue; 
-            
+            double area = contourArea(contour);
+            if (area < (50.0 * scale * scale)) {
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Reject: Too Small (Area: %.1f)", area);
+                continue;
+            }
             Rect bound = boundingRect(contour);
             
             // False-positive filter: Ignore edges to prevent locking onto the horizon during sharp banks
-            if (bound.x < 60 || bound.x > (frame.cols - 60) || 
-                bound.y < 30 || bound.y > (frame.rows - 30)) {
+            if (bound.x < (60 * scale) || bound.x > (small_frame.cols - (60 * scale)) || 
+                bound.y < (30 * scale) || bound.y > (small_frame.rows - (30 * scale))) {
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Reject: Edge Clip");
                 continue; 
             }
 
-            float center_x = bound.x + (bound.width / 2.0f);
-            float center_y = bound.y + (bound.height / 2.0f);
-            valid_centers.push_back(cv::Point2f(center_x, center_y));
+            // A perfect square is 1.0. We allow 0.7 to 1.3 to account for perspective distortion.
+            float aspect_ratio = static_cast<float>(bound.width) / static_cast<float>(bound.height);
+            if (aspect_ratio < 0.7f || aspect_ratio > 1.3f) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Reject: Bad Aspect Ratio (%.2f)", aspect_ratio);
+                continue; // Not a square, ignore it
+            }
+
+            // Calculate center relative to the SMALL frame
+            float small_center_x = bound.x + (bound.width / 2.0f);
+            float small_center_y = bound.y + (bound.height / 2.0f);
+
+            // Convert ROI coordinates back to full-frame coordinates for Georeferencing
+            float global_x = small_center_x / scale;
+            float global_y = small_center_y / scale;
+            valid_centers.push_back(cv::Point2f(global_x, global_y));
 
             // Draw visual debug markers
-            rectangle(frame, bound.tl(), bound.br(), cv::Scalar(0, 255, 0), 2);
-            circle(frame, cv::Point2f(center_x, center_y), 4, cv::Scalar(0, 255, 0), -1); 
+            cv::Rect global_bound(bound.x / scale, bound.y / scale, bound.width / scale, bound.height / scale);
+            cv::rectangle(frame, global_bound, cv::Scalar(0, 255, 0), 2);
+            cv::circle(frame, cv::Point2f(global_x, global_y), 4, cv::Scalar(0, 255, 0), -1);
         }
 
         current_threshold_ = frame_threshold.clone();
-        
 
         return valid_centers;
     }
@@ -349,6 +375,8 @@ private:
 
             if (absolute_height > 0.0 && absolute_height < 50.0) { // Sanity check max height
                 estimated_object_height_ = absolute_height;
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
+                    "[DEBUG] Height Estimator: %.2fm", estimated_object_height_);
             }
         }
 
@@ -393,16 +421,23 @@ private:
                     // Safety reset: If target is lost before lock, discard data to prevent inaccurate drops
                     RCLCPP_WARN(this->get_logger(), "Lost target during gathering. Resetting...");
                     detection_counter_ = 0;
+                    dropZoneFilter.reset();
                     state_ = STATE_SEARCHING;
                     return;
                 }
 
                 // Process the primary target found in this frame
                 if (calculateTargetEstimate(detected_targets[0], final_target_)) {
+                    if(std::abs(telemetry_params.roll) > 0.17){
+                        RCLCPP_WARN(this->get_logger(), "Target is seen, but UAV is banking too hard! Aborting lock");
+                        detection_counter_ = 0;
+                        dropZoneFilter.reset();
+                        return;
+                    }
                     detection_counter_++;
                     
                     // Temporal filter: Require multiple frames to confirm the target is stable
-                    if (detection_counter_ >= 10) {
+                    if (detection_counter_ >= 5) {
                         state_ = STATE_LOCKED;
                         RCLCPP_INFO(this->get_logger(), 
                             "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Triggering Action.",
@@ -412,6 +447,14 @@ private:
                         performAction(final_target_);
                     }
                 }
+                break;
+
+            case STATE_COOLDOWN:
+                    // Do absolutely nothing. Ignore all orange objects while flying away.
+                break;
+
+            case STATE_DONE:
+                // Mission is over.
                 break;
 
             case STATE_FAILED:
@@ -491,10 +534,25 @@ private:
             case rclcpp_action::ResultCode::SUCCEEDED:
                 RCLCPP_INFO(this->get_logger(), "Airdrop Complete! Success: %d", result.result->drop_successful);
                 
-                if (result.result->drop_successful) ++active_dz_;
-                // Auto-reset the mission node for subsequent payload deployments
-                state_ = STATE_SEARCHING; 
-                detection_counter_ = 0;
+                if (result.result->drop_successful) {
+                    ++active_dz_;
+                    ++drop_count_;
+                }
+
+                if (drop_count_ >= 2) {
+                        state_ = STATE_DONE;
+                        RCLCPP_INFO(this->get_logger(), "Payload 2 dropped! Mission Complete.");
+                } else {
+                        state_ = STATE_COOLDOWN;
+                        RCLCPP_INFO(this->get_logger(), "Payload 1 dropped! Entering 15-second blind cooldown.");
+                        
+                        // Start a 15-second timer. When it ends, it calls endCooldown()
+                        cooldown_timer_ = this->create_wall_timer(
+                            15s, 
+                            std::bind(&TargetDetectionNode::endCooldown, this)
+                        );
+                }
+
                 break;
             case rclcpp_action::ResultCode::ABORTED:
             case rclcpp_action::ResultCode::CANCELED:
@@ -504,6 +562,19 @@ private:
                 break;
         }
     }
+
+    void endCooldown()
+        {
+            if (cooldown_timer_) {
+                cooldown_timer_->cancel();
+            }
+            detection_counter_ = 0;
+            dropZoneFilter.reset();
+
+            state_ = STATE_SEARCHING;
+            RCLCPP_INFO(this->get_logger(), "Cooldown finished. Searching for the next target!");
+        }
+
 };
 
 } // namespace target_recognition_cpp
