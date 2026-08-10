@@ -228,29 +228,29 @@ private:
 
     void updateGuiLoop()
     {
-        // Initialize windows once the node is actively spinning in the main loop
-        if (!windows_initialized_) {
-            cv::namedWindow("Video Capture", cv::WINDOW_AUTOSIZE);
-            cv::namedWindow("Object Detection", cv::WINDOW_AUTOSIZE);
-            windows_initialized_ = true;
-        }
+        // // Initialize windows once the node is actively spinning in the main loop
+        // if (!windows_initialized_) {
+        //     cv::namedWindow("Video Capture", cv::WINDOW_AUTOSIZE);
+        //     cv::namedWindow("Object Detection", cv::WINDOW_AUTOSIZE);
+        //     windows_initialized_ = true;
+        // }
 
-        // If frames are available, update the display matrix; otherwise show a clean fallback buffer
-        if (!current_frame_.empty()) {
-            cv::imshow("Video Capture", current_frame_);
-        } else {
-            cv::Mat blank = cv::Mat::zeros(480, 640, CV_8UC3);
-            cv::putText(blank, "Waiting for video stream...", cv::Point(50, 240), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
-            cv::imshow("Video Capture", blank);
-        }
+        // // If frames are available, update the display matrix; otherwise show a clean fallback buffer
+        // if (!current_frame_.empty()) {
+        //     cv::imshow("Video Capture", current_frame_);
+        // } else {
+        //     cv::Mat blank = cv::Mat::zeros(480, 640, CV_8UC3);
+        //     cv::putText(blank, "Waiting for video stream...", cv::Point(50, 240), 
+        //                 cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+        //     cv::imshow("Video Capture", blank);
+        // }
 
-        if (!current_threshold_.empty()) {
-            cv::imshow("Object Detection", current_threshold_);
-        }
+        // if (!current_threshold_.empty()) {
+        //     cv::imshow("Object Detection", current_threshold_);
+        // }
 
-        // Force the OS X11/Wayland window server to process the window events
-        cv::waitKey(1);
+        // // Force the OS X11/Wayland window server to process the window events
+        // cv::waitKey(1);
     }
 
     // -------------- Image Processing -----------------------
