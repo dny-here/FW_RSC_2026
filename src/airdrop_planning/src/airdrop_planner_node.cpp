@@ -1,44 +1,4 @@
 // airdrop_planner_node.cpp
-// Node "Airdrop Planning" — KRTI 2026 Divisi Fixed-Wing.
-//
-// Node SWAKELOLA sesuai gambar arsitektur sistem: SATU node yang merencanakan
-// DAN menerbangkan approach drop (tanpa mission_bridge terpisah), agar hanya
-// airdrop_planning + target_recognition yang berjalan di Raspberry Pi.
-//
-// ref prec_drop Sec. 2.3:
-//   input  : ACTION GOAL interfaces/action/TargetAirdrop dari node
-//            target_recognition (berisi TargetEstimate + bay_index)
-//            posisi & kecepatan wahana + estimasi angin (dari MAVROS/FCU)
-//   proses : hitung release point (Algorithm 1, model balistik eq. 3-5),
-//            bangun truncated Dubins approach (loiter s -> entry p -> release),
-//            GIRING wahana lewat setpoint GUIDED (DO_REPOSITION) — L1/TECS
-//            ArduPilot yang menerbangkan; kita TIDAK menghitung roll/pitch
-//            sendiri (kotak "LOS Guidance" di rancangan tidak diimplementasi),
-//            replan release point saat mencapai titik p (ground speed aktual,
-//            heading DIKUNCI), pelepasan payload dengan MENEMBAK servo bay
-//            langsung ke FCU (MAV_CMD_DO_SET_SERVO via mavros/cmd/command),
-//            deteksi missed target -> replan/abort, kembalikan wahana ke AUTO.
-//   output : ACTION FEEDBACK (AirdropStatus) + ACTION RESULT (drop_successful)
-//            interfaces/AirdropPlan   (telemetri geometri rencana utk GCS)
-//            interfaces/AirdropStatus (topik telemetri utk GCS/logging)
-//            MAV_CMD_DO_REPOSITION via mavros/cmd/command_int (tujuan GUIDED)
-//            MAV_CMD_DO_SET_SERVO via mavros/cmd/command (lepas payload)
-//            mavros/set_mode (kembali ke AUTO saat misi drop selesai)
-//
-// Servo bay ditembak LANGSUNG ke FCU (tanpa node relay terpisah) agar cukup
-// airdrop_planning + target_recognition yang jalan di Raspi. Wiring saat ini:
-// SATU servo (drop.servo_channel_bay = [10]) melayani kedua payload; yang
-// membedakan bay adalah POSISI servo — drop.pwm_release berisi satu PWM per
-// bay ([bay0, bay1]), diindeks dengan bay_index dari goal.
-// Channel bay HARUS bebas di ArduPilot (SERVOx_FUNCTION tidak dipakai FC).
-//
-// PENTING — kenapa DO_REPOSITION dan bukan setpoint_position/global:
-// ArduPlane membuang lat/lon pada SET_POSITION_TARGET_GLOBAL_INT (hanya altitude
-// yang berlaku), sehingga wahana mengorbit tempat GUIDED diaktifkan dan capture
-// entry point tak pernah terjadi. MAV_CMD_DO_REPOSITION (COMMAND_INT) adalah
-// satu-satunya jalur yang benar-benar memindahkan tujuan GUIDED fixed-wing.
-// (Lihat CLAUDE.md, diagnosa 2026-07-23 dari logs/00000020.BIN.)
-
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -452,24 +412,6 @@ private:
     publishStatusAndFeedback();
   }
 
-  // ------------------------- guidance (setpoint GUIDED) -------------------------
-  // Streaming setpoint approach — prec_drop Sec. 2.3 / Fig. 5. Kita hanya kirim
-  // POSISI; L1/TECS ArduPilot yang menerbangkan (kotak "LOS Guidance" pada
-  // rancangan sengaja tidak diimplementasi).
-  //
-  // Referensi PERTAMA adalah PUSAT LOITER s, bukan entry point p ("Its center s
-  // will be the first reference sent to the guidance and control subsystem...
-  // upon approaching it, loiter around it in a clockwise direction"). p adalah
-  // titik SINGGUNG pada orbit itu: di sana course sejajar approach_heading DAN
-  // cross-track nol, sehingga entryCaptured() bisa terpenuhi. Menaruh setpoint
-  // di p justru membuat ArduPlane mengorbit p — capture tak pernah terjadi.
-  //
-  // Setelah masuk STATE_FINAL_APPROACH, tujuan pindah ke titik OVERSHOOT di luar
-  // release point sepanjang approach_heading — bukan release point itu sendiri.
-  // Tujuan GUIDED tepat di release point membuat ArduPlane membelok masuk orbit
-  // SEBELUM melewatinya (cross-track velocity saat rilis tidak nol; prec_drop
-  // Sec. 2.4 menyebut komponen itu mendominasi drop error). Pemicu drop tetap
-  // milik proximity circle, bukan tercapainya setpoint.
   void commandApproachSetpoint()
   {
     if (!plan_ || !uav_geo_) {return;}
@@ -654,8 +596,6 @@ private:
       }
       goal_handle_.reset();
     }
-    // Kembalikan wahana ke mission AUTO — jangan tinggalkan ia yatim mengorbit
-    // di GUIDED, apa pun hasil (sukses / abort / cancel).
     setMode(auto_mode_name_);
     repos_have_sent_ = false;
 
