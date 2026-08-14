@@ -82,6 +82,7 @@ def generate_launch_description():
             'image_size': [640, 480],
             'pixel_format': 'YUYV',
             'output_encoding': 'rgb8',
+            'time_per_frame': [1, 30],
         }],
     )
 
