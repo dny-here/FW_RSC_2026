@@ -91,7 +91,9 @@ private:
     int drop_count_ = 0;
 
     cv::Mat prev_gray_frame_;
+    cv::Mat small_frame_, frame_LAB_, frame_HSV_, frame_threshold_;
     std::vector<cv::Point2f> prev_features_;
+    std::vector<cv::Mat> lab_channels_;
     TelemetryParams prev_telemetry_;
     const double PARALLAX_DISTANCE_THRESHOLD = 2.0; 
     
@@ -195,21 +197,19 @@ private:
     {
         cv::Mat frame;
         try {
-            frame = cv_bridge::toCvCopy(msg, "bgr8")->image;
+            current_frame_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
             return;
         }
 
-        if (frame.empty()) return;
-
-        current_frame_ = frame.clone();
+        if (current_frame_.empty()) return;
         
         // CPU Optimization: Suspend expensive image processing while the planner executes the drop
         if (state_ == STATE_LOCKED || state_ == STATE_WAITING) return;
 
         // Isolate visual targets from the frame
-        std::vector<cv::Point2f> valid_targets = processImage(frame);
+        std::vector<cv::Point2f> valid_targets = processImage(current_frame_);
 
         // Define the target bounding box for the optical flow
         cv::Rect target_rect;
@@ -219,7 +219,7 @@ private:
         }
 
         // Run the background height estimator
-        estimateHeight(frame, telemetry_params, target_rect);
+        estimateHeight(current_frame_, telemetry_params, target_rect);
 
         // Feed targets into the state machine to determine mission progress
         updateMissionState(valid_targets);
@@ -256,26 +256,33 @@ private:
     // -------------- Image Processing -----------------------
     std::vector<cv::Point2f> processImage(cv::Mat& frame)
     {
-        cv::Mat small_frame, frame_MSCRP, frame_HSV, frame_threshold;
         std::vector<cv::Point2f> valid_centers;
 
         // An 800x640 image becomes 400x320. This runs 4x faster!
         float scale = 0.5f;
-        cv::resize(frame, small_frame, cv::Size(), scale, scale, cv::INTER_LINEAR);
+        cv::resize(current_frame_, small_frame_, cv::Size(), scale, scale, cv::INTER_LINEAR);
 
-        // MSCRP Color Constancy
-        std::vector<double> scales = {15.0, 80.0, 250.0};
-        cv::Mat frame_MSCR = msrcp(small_frame, scales, 1.0f, 1.0f);
+        // Converts small frame to LAB frame
+        cv::cvtColor(small_frame_, frame_LAB_, cv::COLOR_BGR2Lab);
+
+        // Split the frame to three different channels
+        cv::split(frame_LAB_, lab_channels_);
+        cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+        clahe->apply(lab_channels_[0], lab_channels_[0]); // Index 0 is L*
+
+        // Returns back LAB frame to BGR then change it to HSV
+        cv::merge(lab_channels_, frame_LAB_);
+        cv::cvtColor(frame_LAB_, small_frame_, cv::COLOR_Lab2BGR);
 
         // Convert to HSV for robust color thresholding against varied lighting
-        cv::cvtColor(frame_MSCR, frame_HSV, COLOR_BGR2HSV);
-        cv::inRange(frame_HSV, 
+        cv::cvtColor(small_frame_, frame_HSV_, COLOR_BGR2HSV);
+        cv::inRange(frame_HSV_, 
                     cv::Scalar(thresholding_params.low_H, thresholding_params.low_S, thresholding_params.low_V), 
                     cv::Scalar(thresholding_params.high_H, thresholding_params.high_S, thresholding_params.high_V), 
-                    frame_threshold);
+                    frame_threshold_);
 
         std::vector<std::vector<Point>> contours;
-        findContours(frame_threshold, contours, RETR_TREE, CHAIN_APPROX_SIMPLE);
+        findContours(frame_threshold_, contours, RETR_TREE, CHAIN_APPROX_SIMPLE);
 
         for (const auto& contour : contours) {
             // Noise filter: Ignore tiny speckles
@@ -287,8 +294,8 @@ private:
             Rect bound = boundingRect(contour);
             
             // False-positive filter: Ignore edges to prevent locking onto the horizon during sharp banks
-            if (bound.x < (60 * scale) || bound.x > (small_frame.cols - (60 * scale)) || 
-                bound.y < (30 * scale) || bound.y > (small_frame.rows - (30 * scale))) {
+            if (bound.x < (60 * scale) || bound.x > (small_frame_.cols - (60 * scale)) || 
+                bound.y < (30 * scale) || bound.y > (small_frame_.rows - (30 * scale))) {
                 RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Reject: Edge Clip");
                 continue; 
             }
@@ -315,7 +322,7 @@ private:
             cv::circle(frame, cv::Point2f(global_x, global_y), 4, cv::Scalar(0, 255, 0), -1);
         }
 
-        current_threshold_ = frame_threshold.clone();
+        current_threshold_ = frame_threshold_.clone();
 
         return valid_centers;
     }
@@ -437,7 +444,7 @@ private:
                     detection_counter_++;
                     
                     // Temporal filter: Require multiple frames to confirm the target is stable
-                    if (detection_counter_ >= 5) {
+                    if (detection_counter_ >= 20) {
                         state_ = STATE_LOCKED;
                         RCLCPP_INFO(this->get_logger(), 
                             "Coordinate Locked! Target at Lat: %.6f, Lon: %.6f, Alt: %.2fm | Triggering Action.",
