@@ -6,12 +6,14 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include "std_msgs/msg/float64.hpp"
+#include "mavros_msgs/msg/rc_out.hpp"
 
 // Action and Custom Message Dependencies
 #include "interfaces/msg/target_estimate.hpp"
 #include "interfaces/msg/airdrop_status.hpp"
 #include "interfaces/action/target_airdrop.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+
 
 // Local Project Dependencies
 #include "target_recognition/targetdetection.hpp"
@@ -65,6 +67,10 @@ public:
         sub_rel_alt_ = this->create_subscription<std_msgs::msg::Float64>(
             get_parameter("topics.rel_alt").as_string(), qos_profile,
             std::bind(&TargetDetectionNode::loadAlt, this, _1));
+
+        sub_rc_out_ = this->create_subscription<mavros_msgs::msg::RCOut>(
+             get_parameter("topics.rc_out").as_string(), qos_profile, 
+             std::bind(&TargetDetectionNode::rcOutCallback, this, _1));
              
         // Initialize mission state
         state_ = STATE_SEARCHING;
@@ -95,7 +101,9 @@ private:
     std::vector<cv::Point2f> prev_features_;
     std::vector<cv::Mat> lab_channels_;
     TelemetryParams prev_telemetry_;
-    const double PARALLAX_DISTANCE_THRESHOLD = 2.0; 
+    const double PARALLAX_DISTANCE_THRESHOLD = 2.0;
+    Geofence geofence_1_, geofence_2_;
+    bool detection_enabled_ = false; // Default to OFF for safety
     
     // This will hold the live height to feed the action server
     double estimated_object_height_ = 0.0;
@@ -107,6 +115,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr subscription_position_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr sub_rel_alt_;
     rclcpp::TimerBase::SharedPtr cooldown_timer_;
+    rclcpp::Subscription<mavros_msgs::msg::RCOut>::SharedPtr sub_rc_out_;
 
     // -------------- Initialization -----------------------
     void declareParams()
@@ -142,6 +151,19 @@ private:
         this->declare_parameter("topics.camera", "camera_node");
         this->declare_parameter("topics.position", "mavros/global_position/global");
         this->declare_parameter("topics.rel_alt", "mavros/global_position/rel_alt");
+        this->declare_parameter("topics.rc_out", "mavros/rc/out");
+
+        // --- Geofencing Parameters ---
+        this->declare_parameter("geofence.enable_1", true);
+        this->declare_parameter("geofence.min_lat_1", 1.0);
+        this->declare_parameter("geofence.max_lat_1", 1.0);
+        this->declare_parameter("geofence.min_lon_1", 1.0);
+        this->declare_parameter("geofence.max_lon_1", 1.0);
+        this->declare_parameter("geofence.enable_2", true);
+        this->declare_parameter("geofence.min_lat_2", 1.0);
+        this->declare_parameter("geofence.max_lat_2", 1.0);
+        this->declare_parameter("geofence.min_lon_2", 1.0);
+        this->declare_parameter("geofence.max_lon_2", 1.0);
     }
 
     void loadParams()
@@ -169,6 +191,23 @@ private:
             this->get_parameter("camera.mat_21").as_double(), this->get_parameter("camera.mat_22").as_double(), this->get_parameter("camera.mat_23").as_double(),
             this->get_parameter("camera.mat_31").as_double(), this->get_parameter("camera.mat_32").as_double(), this->get_parameter("camera.mat_33").as_double()
         );
+
+        // --- Geofencing Parameters ---
+        geofence_1_.enable = this->get_parameter("geofence.enable_1").as_bool();
+        geofence_1_.min_lat = this->get_parameter("geofence.min_lat_1").as_double();
+        geofence_1_.max_lat = this->get_parameter("geofence.max_lat_1").as_double();
+        geofence_1_.min_lon = this->get_parameter("geofence.min_lon_1").as_double();
+        geofence_1_.max_lon = this->get_parameter("geofence.max_lon_1").as_double();
+        geofence_2_.enable = this->get_parameter("geofence.enable_2").as_bool();
+        geofence_2_.min_lat = this->get_parameter("geofence.min_lat_2").as_double();
+        geofence_2_.max_lat = this->get_parameter("geofence.max_lat_2").as_double();
+        geofence_2_.min_lon = this->get_parameter("geofence.min_lon_2").as_double();
+        geofence_2_.max_lon = this->get_parameter("geofence.max_lon_2").as_double();
+
+        RCLCPP_INFO(this->get_logger(), "[INIT] Geofence 1 - Enabled: %d | Lat: [%.6f to %.6f] | Lon: [%.6f to %.6f]", 
+            geofence_1_.enable, geofence_1_.min_lat, geofence_1_.max_lat, geofence_1_.min_lon, geofence_1_.max_lon);
+        RCLCPP_INFO(this->get_logger(), "[INIT] Geofence 2 - Enabled: %d | Lat: [%.6f to %.6f] | Lon: [%.6f to %.6f]", 
+            geofence_2_.enable, geofence_2_.min_lat, geofence_2_.max_lat, geofence_2_.min_lon, geofence_2_.max_lon);
     }
 
     // -------------- Telemtery Loading -----------------------
@@ -192,10 +231,35 @@ private:
         this->telemetry_params.alt = msg->data;
     }
 
+    // -------------- Geofence Logic & Debug -----------------------
+    bool checkGeofence(double lat, double lon) {
+        bool g1_ok = false;
+        bool g2_ok = false;
+        bool any_enabled = false;
+
+        if (geofence_1_.enable) {
+            any_enabled = true;
+            g1_ok = (lat >= geofence_1_.min_lat && lat <= geofence_1_.max_lat &&
+                     lon >= geofence_1_.min_lon && lon <= geofence_1_.max_lon);
+        }
+        
+        if (geofence_2_.enable) {
+            any_enabled = true;
+            g2_ok = (lat >= geofence_2_.min_lat && lat <= geofence_2_.max_lat &&
+                     lon >= geofence_2_.min_lon && lon <= geofence_2_.max_lon);
+        }
+
+        // If no geofences are enabled in the YAML, always allow processing
+        if (!any_enabled) return true; 
+        
+        // If at least one enabled geofence contains the drone, allow processing
+        return (g1_ok || g2_ok); 
+    }
+
     // -------------- Camera Loading -----------------------
     void cameraCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
     {
-        cv::Mat frame;
+
         try {
             current_frame_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
         } catch (cv_bridge::Exception& e) {
@@ -204,6 +268,25 @@ private:
         }
 
         if (current_frame_.empty()) return;
+
+         // --- MISSION PLANNER SWITCH ---
+        // Instantly suspend all heavy image processing if Mission Planner says OFF
+        if (!detection_enabled_) return;
+
+        // --- GEOFENCE CHECK & DEBUG ---
+        bool inside_geofence = checkGeofence(telemetry_params.lat, telemetry_params.lon);
+        
+        if (!inside_geofence) {
+            // Changed to INFO so it forces its way into your terminal
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
+                "[DEBUG GEOFENCE] OUTSIDE bounds! UAV is at Lat: %.6f, Lon: %.6f. Camera suspended.",
+                telemetry_params.lat, telemetry_params.lon);
+            return;
+        } else if (geofence_1_.enable || geofence_2_.enable) {
+            // Optional: Print a reassuring message every 5 seconds if it IS working
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
+                "[DEBUG GEOFENCE] UAV is inside target zone. Processing camera frames...");
+        }
         
         // CPU Optimization: Suspend expensive image processing while the planner executes the drop
         if (state_ == STATE_LOCKED || state_ == STATE_WAITING) return;
@@ -228,29 +311,29 @@ private:
 
     void updateGuiLoop()
     {
-        // // Initialize windows once the node is actively spinning in the main loop
-        // if (!windows_initialized_) {
-        //     cv::namedWindow("Video Capture", cv::WINDOW_AUTOSIZE);
-        //     cv::namedWindow("Object Detection", cv::WINDOW_AUTOSIZE);
-        //     windows_initialized_ = true;
-        // }
+        // Initialize windows once the node is actively spinning in the main loop
+        if (!windows_initialized_) {
+            cv::namedWindow("Video Capture", cv::WINDOW_AUTOSIZE);
+            cv::namedWindow("Object Detection", cv::WINDOW_AUTOSIZE);
+            windows_initialized_ = true;
+        }
 
-        // // If frames are available, update the display matrix; otherwise show a clean fallback buffer
-        // if (!current_frame_.empty()) {
-        //     cv::imshow("Video Capture", current_frame_);
-        // } else {
-        //     cv::Mat blank = cv::Mat::zeros(480, 640, CV_8UC3);
-        //     cv::putText(blank, "Waiting for video stream...", cv::Point(50, 240), 
-        //                 cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
-        //     cv::imshow("Video Capture", blank);
-        // }
+        // If frames are available, update the display matrix; otherwise show a clean fallback buffer
+        if (!current_frame_.empty()) {
+            cv::imshow("Video Capture", current_frame_);
+        } else {
+            cv::Mat blank = cv::Mat::zeros(480, 640, CV_8UC3);
+            cv::putText(blank, "Waiting for video stream...", cv::Point(50, 240), 
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+            cv::imshow("Video Capture", blank);
+        }
 
-        // if (!current_threshold_.empty()) {
-        //     cv::imshow("Object Detection", current_threshold_);
-        // }
+        if (!current_threshold_.empty()) {
+            cv::imshow("Object Detection", current_threshold_);
+        }
 
-        // // Force the OS X11/Wayland window server to process the window events
-        // cv::waitKey(1);
+        // Force the OS X11/Wayland window server to process the window events
+        cv::waitKey(1);
     }
 
     // -------------- Image Processing -----------------------
@@ -581,6 +664,29 @@ private:
             state_ = STATE_SEARCHING;
             RCLCPP_INFO(this->get_logger(), "Cooldown finished. Searching for the next target!");
         }
+
+// -------------- Mission Planner Switch -----------------------
+    void rcOutCallback(const mavros_msgs::msg::RCOut::ConstSharedPtr msg) {
+        // Arrays are zero-indexed, so Servo 9 is index 8
+        size_t trigger_channel_index = 12; 
+
+        if (msg->channels.size() > trigger_channel_index) {
+            uint16_t pwm = msg->channels[trigger_channel_index];
+            
+            // PWM > 1500 means State 2 (ON)
+            bool incoming_state = (pwm > 1500); 
+
+            // Log only when the state actually changes so we don't spam the terminal
+            if (incoming_state != detection_enabled_) {
+                detection_enabled_ = incoming_state;
+                if (detection_enabled_) {
+                    RCLCPP_WARN(this->get_logger(), "Mission Planner command: TARGET DETECTION ENABLED");
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "Mission Planner command: TARGET DETECTION DISABLED");
+                }
+            }
+        }
+    }
 
 };
 

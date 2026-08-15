@@ -17,6 +17,7 @@ find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(mavros_msgs REQUIRED)
 
 # Custom message/action interfaces
 find_package(interfaces REQUIRED)
@@ -54,6 +55,7 @@ ament_target_dependencies(target_detection
   interfaces
   rclcpp_action
   std_msgs
+  mavros_msgs
 )
 
 # Link OpenCV
