@@ -59,7 +59,7 @@
     <include>
       <uri>model://orange_tarp_target</uri>
       <name>dz_1</name>
-      <pose>400.0 400.0 4.2 0 0 0</pose>
+      <pose>400.0 400.0 0.0 0 0 0</pose>
     </include>
 
     <!-- DZ-2 (Right Drop Zone from Image) -->
@@ -67,8 +67,21 @@
     <include>
       <uri>model://orange_tarp_target</uri>
       <name>dz_2</name>
-      <pose>600.0 0.0 2.5 0 0 0</pose>
+      <pose>600.0 0.0 0.0 0 0 0</pose>
     </include>
+
+    <include>
+      <uri>model://orange_tarp_target</uri>
+      <name>random_orange_tarp_1</name>
+      <pose>100.0 100.0 0.0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://orange_tarp_target</uri>
+      <name>random_orange_tarp_2</name>
+      <pose> 0.0 200.0 0.0 0 0 0</pose>
+    </include>
+
 
   </world>
 </sdf>
