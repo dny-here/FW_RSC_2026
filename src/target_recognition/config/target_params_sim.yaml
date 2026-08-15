@@ -65,4 +65,18 @@ target_recognition_node:
       odom: "mavros/local_position/odom"
       camera: "camera_node"
       position: "mavros/global_position/global"
-      rel_alt: "mavros/global_position/rel_alt"   
+      rel_alt: "mavros/global_position/rel_alt"
+      rc_out : "mavros/rc/out"
+
+    # geofencing coordinates
+    geofence:
+      enable_1: true
+      min_lat_1: -35.3626135
+      max_lat_1: -35.3568125
+      min_lon_1: 149.1662586
+      max_lon_1: 149.1732484
+      enable_2: true
+      min_lat_2: -35.3626135
+      max_lat_2: -35.3568125 
+      min_lon_2: 149.1662586
+      max_lon_2: 149.1732484   
