@@ -180,7 +180,7 @@ def generate_launch_description():
                     'start duluan gagal menyambung ke model JSON.')
 
     stack_delay_arg = DeclareLaunchArgument(
-        'stack_delay', default_value='12.0',
+        'stack_delay', default_value='20.0',
         description='Detik sebelum MAVROS + kedua node dinyalakan. TIDAK '
                     'menanggung beban: MAVROS mencoba ulang selamanya dan '
                     'planner menurun dengan anggun saat service belum siap. Ada '
